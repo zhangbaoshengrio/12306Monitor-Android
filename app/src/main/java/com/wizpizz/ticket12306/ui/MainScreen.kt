@@ -34,6 +34,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
     val isRunning by vm.isRunning.collectAsState()
     val isQuerying by vm.isQuerying.collectAsState()
     val queryResult by vm.queryResult.collectAsState()
+    val queryLog by vm.queryLog.collectAsState()
     val foundTickets by vm.foundTickets.collectAsState()
     val errorMsg by vm.errorMsg.collectAsState()
 
@@ -177,6 +178,25 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                     enabled = !isQuerying
                 ) {
                     Text(if (isRunning) "停止监控" else "持续监控", fontSize = 15.sp)
+                }
+            }
+
+            // ── 查询日志 ──────────────────────────────────────────
+            if (queryLog.isNotEmpty()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        queryLog.forEach { line ->
+                            Text(line, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (isQuerying) {
+                            Text("查询中...", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
                 }
             }
 

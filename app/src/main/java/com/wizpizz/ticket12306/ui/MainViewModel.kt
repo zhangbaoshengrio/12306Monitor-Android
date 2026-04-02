@@ -42,8 +42,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val errorMsg = MutableStateFlow<String?>(null)
     val isQuerying = MutableStateFlow(false)
-    // null = 未查询过, empty = 查了但没票, non-empty = 有票
     val queryResult = MutableStateFlow<List<TrainTicket>?>(null)
+    val queryLog = MutableStateFlow<List<String>>(emptyList())
 
     init {
         MonitorService.onStatusChanged = { running -> _isRunning.value = running }
@@ -55,8 +55,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             isQuerying.value = true
             errorMsg.value = null
+            queryLog.value = emptyList()
             try {
-                val result = MonitorEngine(config).queryOnce()
+                val result = MonitorEngine(config).queryOnce { line ->
+                    queryLog.value = queryLog.value + line
+                }
                 queryResult.value = result
             } catch (e: Exception) {
                 errorMsg.value = "查询失败: ${e.message}"
