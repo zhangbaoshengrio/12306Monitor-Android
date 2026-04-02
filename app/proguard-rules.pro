@@ -1,0 +1,2 @@
+-keep class com.wizpizz.ticket12306.model.** { *; }
+-keep class com.wizpizz.ticket12306.api.** { *; }
