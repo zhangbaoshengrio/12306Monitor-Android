@@ -15,6 +15,8 @@ private const val TAG = "TicketApi"
 private const val QUERY_URL = "https://kyfw.12306.cn/otn/leftTicket/query"
 // 经停站查询接口
 private const val STOP_URL = "https://kyfw.12306.cn/otn/czxx/queryByTrainNo"
+// 票价查询接口
+private const val PRICE_URL = "https://kyfw.12306.cn/otn/leftTicket/queryTicketPrice"
 
 // result 字符串 | 分割后各字段的位置
 private const val IDX_TRAIN_NO_INTERNAL = 2  // 内部编号，如 5l000G58300
@@ -23,6 +25,8 @@ private const val IDX_FROM_STATION_NAME = 6
 private const val IDX_TO_STATION_NAME = 7
 private const val IDX_DEPART_TIME = 8
 private const val IDX_ARRIVE_TIME = 9
+private const val IDX_FROM_STATION_NO = 10   // 出发站在全程中的序号（价格查询用）
+private const val IDX_TO_STATION_NO = 11     // 到达站在全程中的序号（价格查询用）
 private const val IDX_ORIGIN_CODE = 15       // 本次列车实际始发站电报码
 private const val IDX_TERMINAL_CODE = 16     // 本次列车实际终点站电报码
 private const val IDX_SWZ = 32   // 商务/特等座
@@ -118,6 +122,63 @@ class TicketApi(private val cookie: String) {
         }
     }
 
+    /**
+     * 查询指定车次/区间的票价
+     * seat_types 常用值：O=二等 M=一等 9=商务 3=硬卧 4=软卧 1=硬座
+     */
+    fun queryPrice(
+        trainNoInternal: String,
+        fromStationNo: String,
+        toStationNo: String,
+        date: String
+    ): Map<String, String> {
+        val url = "$PRICE_URL" +
+            "?train_no=$trainNoInternal" +
+            "&from_station_no=$fromStationNo" +
+            "&to_station_no=$toStationNo" +
+            "&seat_types=O9M953141" +
+            "&train_date=$date"
+
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
+            .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
+            .header("Accept", "*/*")
+            .header("Cookie", cookie)
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: return emptyMap()
+            if (!response.isSuccessful) return emptyMap()
+            val root = JsonParser.parseString(body).asJsonObject
+            if (root.get("status")?.asBoolean != true) return emptyMap()
+            val data = root.getAsJsonObject("data") ?: return emptyMap()
+
+            // 价格接口返回席别代码 → 价格字符串，映射为可读名称
+            buildMap {
+                fun tryPut(humanName: String, vararg keys: String) {
+                    for (k in keys) {
+                        val v = data.get(k)?.asString?.trim() ?: continue
+                        if (v.isNotEmpty()) { put(humanName, v); return }
+                    }
+                }
+                tryPut("商务/特等座", "9", "P", "0")
+                tryPut("一等座", "M")
+                tryPut("二等座", "O")
+                tryPut("高级软卧", "6")
+                tryPut("软卧", "4")
+                tryPut("硬卧", "3")
+                tryPut("硬座", "1")
+                tryPut("无座", "WZ")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "queryPrice failed: ${e.message}")
+            emptyMap()
+        }
+    }
+
     private fun parseResult(json: String): List<TrainTicket> {
         return try {
             val root = JsonParser.parseString(json).asJsonObject
@@ -128,20 +189,20 @@ class TicketApi(private val cookie: String) {
             results.mapNotNull { el ->
                 val fields = el.asString.split("|")
                 if (fields.size < 35) return@mapNotNull null
+                // 席别余量（空 = 无票，不过滤，全部展示）
                 val seats = buildMap<String, String> {
-                    fun put(key: String, idx: Int) {
+                    fun add(key: String, idx: Int) {
                         val v = fields[idx].trim()
                         if (v.isNotEmpty() && v != "0") put(key, v)
                     }
-                    put("商务/特等座", IDX_SWZ)
-                    put("一等座", IDX_YDZ)
-                    put("二等座", IDX_EDZ)
-                    put("硬卧", IDX_YW)
-                    put("软卧", IDX_RW)
-                    put("硬座", IDX_YZ)
-                    put("无座", IDX_WZ)
+                    add("商务/特等座", IDX_SWZ)
+                    add("一等座", IDX_YDZ)
+                    add("二等座", IDX_EDZ)
+                    add("硬卧", IDX_YW)
+                    add("软卧", IDX_RW)
+                    add("硬座", IDX_YZ)
+                    add("无座", IDX_WZ)
                 }
-                if (seats.isEmpty()) return@mapNotNull null
                 TrainTicket(
                     trainNo = fields[IDX_TRAIN_NO].trim(),
                     trainNoInternal = fields[IDX_TRAIN_NO_INTERNAL].trim(),
@@ -149,6 +210,8 @@ class TicketApi(private val cookie: String) {
                     terminalCode = fields.getOrNull(IDX_TERMINAL_CODE)?.trim() ?: "",
                     fromStation = fields[IDX_FROM_STATION_NAME].trim(),
                     toStation = fields[IDX_TO_STATION_NAME].trim(),
+                    fromStationNo = fields.getOrNull(IDX_FROM_STATION_NO)?.trim() ?: "",
+                    toStationNo = fields.getOrNull(IDX_TO_STATION_NO)?.trim() ?: "",
                     departTime = fields[IDX_DEPART_TIME].trim(),
                     arriveTime = fields[IDX_ARRIVE_TIME].trim(),
                     seats = seats

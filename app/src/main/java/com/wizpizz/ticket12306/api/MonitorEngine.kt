@@ -93,7 +93,19 @@ class MonitorEngine(private val config: MonitorConfig) {
             }
         }
 
-        return found.distinctBy { "${it.trainNo}|${it.fromStation}|${it.toStation}" }
+        val deduped = found.distinctBy { "${it.trainNo}|${it.fromStation}|${it.toStation}" }
+
+        // ── Step 4: 批量查价格 ────────────────────────────────────
+        return deduped.map { ticket ->
+            delay(Random.nextLong(300, 700))
+            val prices = api.queryPrice(
+                ticket.trainNoInternal,
+                ticket.fromStationNo,
+                ticket.toStationNo,
+                config.date
+            )
+            if (prices.isNotEmpty()) ticket.copy(prices = prices) else ticket
+        }
     }
 
     /**

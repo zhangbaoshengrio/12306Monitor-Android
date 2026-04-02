@@ -188,16 +188,21 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 Divider()
                 if (displayTickets.isEmpty() && !isQuerying) {
                     Text(
-                        "暂无余票",
+                        "未查到任何车次",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 15.sp
                     )
                 } else if (displayTickets.isNotEmpty()) {
+                    val withTickets = displayTickets.count { it.seats.isNotEmpty() }
+                    val summary = if (withTickets > 0)
+                        "共 ${displayTickets.size} 个区间  ★ 有票 $withTickets 个"
+                    else
+                        "共 ${displayTickets.size} 个区间，均无余票"
                     Text(
-                        "★ 找到余票 ${displayTickets.size} 个区间",
-                        color = Color(0xFF2E7D32),
+                        summary,
+                        color = if (withTickets > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
+                        fontSize = 15.sp
                     )
                     displayTickets.forEach { ticket -> TicketCard(ticket) }
                 }
@@ -235,34 +240,44 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
 @Composable
 fun TicketCard(ticket: TrainTicket) {
     val context = LocalContext.current
+    val hasTickets = ticket.seats.isNotEmpty()
+    val cardColor = if (hasTickets) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
+        colors = CardDefaults.cardColors(containerColor = cardColor)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // ── 车次 + 区间 + 时间 ─────────────────────────────────
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     ticket.trainNo,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
-                    color = Color(0xFF1B5E20)
+                    color = if (hasTickets) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.width(12.dp))
-                Text("${ticket.fromStation} → ${ticket.toStation}", fontSize = 14.sp)
-                Spacer(Modifier.weight(1f))
-                Text("${ticket.departTime} → ${ticket.arriveTime}", fontSize = 12.sp, color = Color.Gray)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "${ticket.fromStation} → ${ticket.toStation}",
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${ticket.departTime}  ${ticket.arriveTime}",
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
             }
-            Spacer(Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+            // ── 余票状态 ──────────────────────────────────────────
+            if (hasTickets) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                     ticket.seats.forEach { (type, count) ->
+                        val price = ticket.prices[type]
+                        val label = if (price != null) "$type $count · $price" else "$type $count"
                         SuggestionChip(
                             onClick = {},
-                            label = { Text("$type: $count", fontSize = 12.sp) },
+                            label = { Text(label, fontSize = 11.sp) },
                             colors = SuggestionChipDefaults.suggestionChipColors(
                                 containerColor = Color(0xFF4CAF50),
                                 labelColor = Color.White
@@ -270,10 +285,49 @@ fun TicketCard(ticket: TrainTicket) {
                         )
                     }
                 }
+                // 有票但价格里还有其他席别价格（那些席别已售完）
+                if (ticket.prices.isNotEmpty()) {
+                    val soldOutPrices = ticket.prices.filter { (k, _) -> k !in ticket.seats }
+                    if (soldOutPrices.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            soldOutPrices.forEach { (type, price) ->
+                                SuggestionChip(
+                                    onClick = {},
+                                    label = { Text("$type 无票 · $price", fontSize = 11.sp) },
+                                    colors = SuggestionChipDefaults.suggestionChipColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 无票，只显示价格供参考
+                if (ticket.prices.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ticket.prices.forEach { (type, price) ->
+                            SuggestionChip(
+                                onClick = {},
+                                label = { Text("$type 无票 · $price", fontSize = 11.sp) },
+                                colors = SuggestionChipDefaults.suggestionChipColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    Text("无票", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
+            // ── 购票按钮（有票才显示）─────────────────────────────
+            if (hasTickets) {
                 Button(
                     onClick = { open12306(context) },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.align(Alignment.End)
                 ) {
                     Text("去购票", fontSize = 12.sp, color = Color.White)
                 }
