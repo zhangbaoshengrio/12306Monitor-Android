@@ -32,28 +32,31 @@ class MonitorEngine(private val config: MonitorConfig) {
     private val api = TicketApi(config.cookie)
 
     /**
+     * 单次查询，返回有票列表
+     */
+    suspend fun queryOnce(): List<TrainTicket> {
+        val found = mutableListOf<TrainTicket>()
+
+        val tickets = api.queryTickets(config.boardStation, config.destStation, config.date)
+        Log.d(TAG, "board→dest: ${tickets.size} trains with seats")
+        found.addAll(tickets)
+
+        val midStations = getMidStations(config.boardStation, config.destStation)
+        for (mid in midStations) {
+            val t = api.queryTickets(config.boardStation, mid, config.date)
+            found.addAll(t)
+            delay(Random.nextLong(800, 1500))
+        }
+
+        return found.distinctBy { "${it.trainNo}|${it.fromStation}|${it.toStation}" }
+    }
+
+    /**
      * 返回持续轮询的 Flow，每次轮询 emit 发现的有票列表（可能为空）
      */
     fun monitorFlow(): Flow<List<TrainTicket>> = flow {
         while (true) {
-            val found = mutableListOf<TrainTicket>()
-
-            // ── 策略1: 查 经过站 → 终点站（买短乘长，能上车就行）──────────
-            val tickets = api.queryTickets(config.boardStation, config.destStation, config.date)
-            Log.d(TAG, "board→dest: ${tickets.size} trains with seats")
-            found.addAll(tickets)
-
-            // ── 策略2: 查 经过站 → 经过站之后、终点站之前 的中间站 ─────────
-            // 使用内置中间站列表（在合肥南→汉口这条线上的中间站）
-            val midStations = getMidStations(config.boardStation, config.destStation)
-            for (mid in midStations) {
-                val t = api.queryTickets(config.boardStation, mid, config.date)
-                found.addAll(t)
-                delay(Random.nextLong(800, 1500))
-            }
-
-            emit(found.distinctBy { "${it.trainNo}|${it.fromStation}|${it.toStation}" })
-
+            emit(queryOnce())
             val wait = (config.intervalSeconds * 1000L) + Random.nextLong(0, 3000)
             Log.d(TAG, "waiting ${wait}ms before next poll")
             delay(wait)

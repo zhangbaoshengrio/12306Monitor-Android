@@ -32,6 +32,8 @@ import com.wizpizz.ticket12306.model.TrainTicket
 @Composable
 fun MainScreen(vm: MainViewModel = viewModel()) {
     val isRunning by vm.isRunning.collectAsState()
+    val isQuerying by vm.isQuerying.collectAsState()
+    val queryResult by vm.queryResult.collectAsState()
     val foundTickets by vm.foundTickets.collectAsState()
     val errorMsg by vm.errorMsg.collectAsState()
 
@@ -58,7 +60,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("12306 余票监控") })
+            TopAppBar(title = { Text("12306 余票查询") })
         }
     ) { padding ->
         Column(
@@ -68,31 +70,6 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-
-            // ── 状态卡片 ──────────────────────────────────────────
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isRunning) Color(0xFF1B5E20) else MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (isRunning) "● 监控运行中" else "○ 未在监控",
-                        color = if (isRunning) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (isRunning) {
-                        TextButton(onClick = { vm.stopMonitor() }) {
-                            Text("停止", color = Color.White)
-                        }
-                    }
-                }
-            }
 
             // ── 错误提示 ──────────────────────────────────────────
             errorMsg?.let {
@@ -176,27 +153,53 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
 
-            // ── 开始按钮 ──────────────────────────────────────────
-            if (!isRunning) {
+            // ── 操作按钮 ──────────────────────────────────────────
+            val busy = isRunning || isQuerying
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = { vm.startMonitor() },
-                    modifier = Modifier.fillMaxWidth().height(50.dp)
+                    onClick = { vm.queryOnce() },
+                    modifier = Modifier.weight(1f).height(50.dp),
+                    enabled = !busy
                 ) {
-                    Text("开始监控", fontSize = 16.sp)
+                    if (isQuerying) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Text("查询", fontSize = 16.sp)
+                    }
+                }
+                OutlinedButton(
+                    onClick = { if (isRunning) vm.stopMonitor() else vm.startMonitor() },
+                    modifier = Modifier.weight(1f).height(50.dp),
+                    enabled = !isQuerying
+                ) {
+                    Text(if (isRunning) "停止监控" else "持续监控", fontSize = 15.sp)
                 }
             }
 
-            // ── 发现的余票列表 ────────────────────────────────────
-            if (foundTickets.isNotEmpty()) {
+            // ── 查询结果 ──────────────────────────────────────────
+            val displayTickets = if (isRunning) foundTickets else queryResult ?: emptyList()
+            val hasQueried = queryResult != null || isRunning
+
+            if (hasQueried) {
                 Divider()
-                Text(
-                    "★ 发现余票 ${foundTickets.size} 个区间",
-                    color = Color(0xFF2E7D32),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-                foundTickets.forEach { ticket ->
-                    TicketCard(ticket)
+                if (displayTickets.isEmpty() && !isQuerying) {
+                    Text(
+                        "暂无余票",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 15.sp
+                    )
+                } else if (displayTickets.isNotEmpty()) {
+                    Text(
+                        "★ 找到余票 ${displayTickets.size} 个区间",
+                        color = Color(0xFF2E7D32),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    displayTickets.forEach { ticket -> TicketCard(ticket) }
                 }
             }
 
