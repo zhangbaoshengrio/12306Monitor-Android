@@ -6,12 +6,15 @@ data class Station(
 )
 
 data class TrainTicket(
-    val trainNo: String,       // 车次，如 G1474
-    val fromStation: String,   // 出发站名
-    val toStation: String,     // 到达站名
-    val departTime: String,    // 出发时间
-    val arriveTime: String,    // 到达时间
-    val seats: Map<String, String>  // 席别 → 余量，如 "二等座" → "有"
+    val trainNo: String,           // 车次，如 G583
+    val trainNoInternal: String,   // 内部编号，如 5l000G58300（用于 czxx 接口）
+    val originCode: String,        // 本次列车实际始发站电报码（fields[15]）
+    val terminalCode: String,      // 本次列车实际终点站电报码（fields[16]）
+    val fromStation: String,       // 本段票的出发站名
+    val toStation: String,         // 本段票的到达站名
+    val departTime: String,        // 出发时间
+    val arriveTime: String,        // 到达时间
+    val seats: Map<String, String> // 席别 → 余量，如 "二等座" → "有"
 )
 
 data class MonitorConfig(

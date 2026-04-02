@@ -12,47 +12,92 @@ import kotlin.random.Random
 private const val TAG = "MonitorEngine"
 
 /**
- * 监控逻辑：
+ * 买短乘长查询逻辑：
  *
- * 用户输入：经过站(board) + 终点站(dest)
+ * 用户输入：经过站 (board) + 终点站 (dest)
  *
- * 查询策略：
- * 1. 查「board → dest」之间任意中间站有票（买短乘长：上车补票到终点）
- *    即：board → dest 沿途各站，包括 dest 本身
- * 2. 查「board 之前各站 → board」有票（能进站上车）
- *    这需要先查出该区间所有经停站，12306 API 提供 /queryStopStationInfo
- *
- * 由于 12306 停站接口需要 secretStr（加密串），我们采用简化策略：
- * 直接用「board → dest」查，因为能买到 board→任意后续站 的票就够了。
- * 同时也查「任意前序站 → board」确保能进站。
- * 前序站列表由用户或内置常见前序站提供。
+ * 步骤：
+ * 1. 查 board→dest，得到途经这两站的所有车次（G583 等）
+ * 2. 对每个车次，用 czxx API 取完整经停站列表（含 board 前面的站）
+ * 3. 若 board 不是该车次始发站，则 board 前面有站 → 查「前序站 → 后续站」的票
+ *    只要 board 是中间站，买这张票就能在 board 上车
+ * 4. 合并去重后返回
  */
 class MonitorEngine(private val config: MonitorConfig) {
 
     private val api = TicketApi(config.cookie)
 
     /**
-     * 单次查询，返回有票列表
+     * 单次查询，返回所有可供在 board 上车的票段
      */
     suspend fun queryOnce(): List<TrainTicket> {
         val found = mutableListOf<TrainTicket>()
 
-        val tickets = api.queryTickets(config.boardStation, config.destStation, config.date)
-        Log.d(TAG, "board→dest: ${tickets.size} trains with seats")
-        found.addAll(tickets)
+        // ── Step 1: 直查 board→dest ────────────────────────────────
+        val directTickets = api.queryTickets(config.boardStation, config.destStation, config.date)
+        Log.d(TAG, "direct board→dest: ${directTickets.size} results")
+        found.addAll(directTickets)
 
-        val midStations = getMidStations(config.boardStation, config.destStation)
-        for (mid in midStations) {
-            val t = api.queryTickets(config.boardStation, mid, config.date)
-            found.addAll(t)
-            delay(Random.nextLong(800, 1500))
+        // ── Step 2: 取每个车次的经停站列表 ─────────────────────────
+        // 按 (trainNoInternal, originCode, terminalCode) 去重
+        val trainMeta = directTickets
+            .filter { it.originCode.isNotEmpty() && it.terminalCode.isNotEmpty() }
+            .distinctBy { it.trainNoInternal }
+
+        for (meta in trainMeta) {
+            // 如果 board == 始发站，前面没有站，不需要再查
+            if (meta.originCode == config.boardStation.code) {
+                Log.d(TAG, "${meta.trainNo}: board is origin, skip prev-query")
+                continue
+            }
+
+            delay(Random.nextLong(500, 1000))
+
+            val stops = api.getStopList(
+                meta.trainNoInternal,
+                meta.originCode,
+                meta.terminalCode,
+                config.date
+            )
+            Log.d(TAG, "${meta.trainNo}: got ${stops.size} stops")
+            if (stops.isEmpty()) continue
+
+            val boardIdx = stops.indexOfFirst { it.name == config.boardStation.name }
+            if (boardIdx <= 0) {
+                Log.d(TAG, "${meta.trainNo}: board not found or is first stop in list")
+                continue
+            }
+
+            val prevStops = stops.subList(0, boardIdx)      // board 前面的站
+            val nextStops = stops.subList(boardIdx + 1, stops.size) // board 后面的站
+
+            // ── Step 3: 查 前序站 → 后续站 ───────────────────────
+            // 只查「能让你在 board 上车」的票段：
+            //   FROM 在 board 之前（所以 board 是中间站，可上车）
+            //   TO   在 board 之后（否则到了 board 就下车了，没用）
+            //
+            // 为控制请求数，对每个 prevStop 只查 dest 和紧邻 board 的 1~2 个站
+            val toStations = buildList {
+                add(config.destStation)                    // 最理想：一票到终点
+                nextStops.take(2).forEach { add(it) }     // 备用：近一两站也能上车
+            }.distinctBy { it.code }
+
+            for (prev in prevStops) {
+                for (to in toStations) {
+                    delay(Random.nextLong(600, 1200))
+                    val tickets = api.queryTickets(prev, to, config.date)
+                    // 只保留这班车次的结果（避免混入其他车次）
+                    found.addAll(tickets.filter { it.trainNo == meta.trainNo })
+                    Log.d(TAG, "${meta.trainNo} ${prev.name}→${to.name}: ${tickets.count { it.trainNo == meta.trainNo }} tickets")
+                }
+            }
         }
 
         return found.distinctBy { "${it.trainNo}|${it.fromStation}|${it.toStation}" }
     }
 
     /**
-     * 返回持续轮询的 Flow，每次轮询 emit 发现的有票列表（可能为空）
+     * 持续轮询的 Flow
      */
     fun monitorFlow(): Flow<List<TrainTicket>> = flow {
         while (true) {
@@ -61,47 +106,5 @@ class MonitorEngine(private val config: MonitorConfig) {
             Log.d(TAG, "waiting ${wait}ms before next poll")
             delay(wait)
         }
-    }
-
-    /**
-     * 获取 from → to 之间的常见中间站
-     * 实际上12306 API 不直接提供沿途站列表（需要 secretStr），
-     * 这里内置了高铁常见走廊的中间站，覆盖大多数使用场景。
-     */
-    private fun getMidStations(from: Station, to: Station): List<Station> {
-        // 合肥南方向常见走廊
-        val hefeiCorridor = listOf(
-            Station("六安", "LAN"),
-            Station("金寨", "JJZ"),
-            Station("麻城北", "MCB"),
-            Station("红安西", "HAX"),
-            Station("汉口", "HHK"),
-            Station("汉川", "HHC"),
-            Station("仙桃西", "XTX"),
-            Station("荆州", "JGZ"),
-            Station("宜昌东", "YCD"),
-        )
-        // 京沪走廊
-        val jinghuCorridor = listOf(
-            Station("南京南", "NKH"),
-            Station("镇江南", "ZJH"),
-            Station("丹阳北", "DAH"),
-            Station("常州北", "CZH"),
-            Station("无锡东", "WXH"),
-            Station("苏州北", "SZH"),
-        )
-
-        val fromCode = from.code
-        val toCode = to.code
-
-        // 匹配走廊：如果 from 或 to 在某条走廊里，返回该走廊内 from 之后、to 之前的站
-        for (corridor in listOf(hefeiCorridor, jinghuCorridor)) {
-            val fromIdx = corridor.indexOfFirst { it.code == fromCode }
-            val toIdx = corridor.indexOfFirst { it.code == toCode }
-            if (fromIdx >= 0 && toIdx > fromIdx) {
-                return corridor.subList(fromIdx + 1, toIdx)
-            }
-        }
-        return emptyList()
     }
 }

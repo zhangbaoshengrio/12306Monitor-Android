@@ -60,4 +60,8 @@ object StationData {
             it.name.contains(query) || it.code.contains(query.uppercase())
         }
     }
+
+    /** 按站名精确查找（用于 czxx 经停站反查电报码）*/
+    fun findByName(name: String): Station? =
+        commonStations.firstOrNull { it.name == name }
 }
