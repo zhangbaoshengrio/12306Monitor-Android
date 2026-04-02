@@ -1,5 +1,8 @@
 package com.wizpizz.ticket12306.ui
 
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -202,6 +206,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
 
 @Composable
 fun TicketCard(ticket: TrainTicket) {
+    val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
@@ -220,20 +225,46 @@ fun TicketCard(ticket: TrainTicket) {
                 Text("${ticket.departTime} → ${ticket.arriveTime}", fontSize = 12.sp, color = Color.Gray)
             }
             Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ticket.seats.forEach { (type, count) ->
-                    SuggestionChip(
-                        onClick = {},
-                        label = { Text("$type: $count", fontSize = 12.sp) },
-                        colors = SuggestionChipDefaults.suggestionChipColors(
-                            containerColor = Color(0xFF4CAF50),
-                            labelColor = Color.White
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ticket.seats.forEach { (type, count) ->
+                        SuggestionChip(
+                            onClick = {},
+                            label = { Text("$type: $count", fontSize = 12.sp) },
+                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                containerColor = Color(0xFF4CAF50),
+                                labelColor = Color.White
+                            )
                         )
-                    )
+                    }
+                }
+                Button(
+                    onClick = { open12306(context) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Text("去购票", fontSize = 12.sp, color = Color.White)
                 }
             }
         }
     }
+}
+
+/** 优先打开 12306 APP，若未安装则打开网页 */
+private fun open12306(context: android.content.Context) {
+    val appPackage = "com.MobileTicket"
+    val intent = try {
+        context.packageManager.getLaunchIntentForPackage(appPackage)
+            ?: throw PackageManager.NameNotFoundException()
+    } catch (e: Exception) {
+        Intent(Intent.ACTION_VIEW, Uri.parse("https://kyfw.12306.cn/otn/leftTicket/init"))
+    }
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    context.startActivity(intent)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -149,9 +150,16 @@ class MonitorService : LifecycleService() {
             "${it.trainNo} ${it.fromStation}→${it.toStation} ${it.departTime}  " +
             it.seats.entries.take(2).joinToString(" ") { (k, v) -> "$k:$v" }
         }
-        val openIntent = PendingIntent.getActivity(
+        // 点通知主体 → 打开本 APP
+        val openAppIntent = PendingIntent.getActivity(
             this, 1,
             Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        // "去购票" 按钮 → 尝试打开 12306 APP，失败则打开网页
+        val buy12306Intent = PendingIntent.getActivity(
+            this, 2,
+            open12306Intent(),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notif = NotificationCompat.Builder(this, CHANNEL_FOUND)
@@ -159,13 +167,29 @@ class MonitorService : LifecycleService() {
             .setContentTitle("★ 发现余票！共 ${tickets.size} 个区间")
             .setContentText("${first.trainNo} ${first.fromStation}→${first.toStation} ${first.departTime}")
             .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
-            .setContentIntent(openIntent)
+            .setContentIntent(openAppIntent)
+            .addAction(0, "去 12306 购票 →", buy12306Intent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
         getSystemService(NotificationManager::class.java)
             .notify(NOTIF_ID_FOUND, notif)
+    }
+
+    /** 优先打开 12306 APP，若未安装则跳转到网页购票 */
+    private fun open12306Intent(): Intent {
+        val pm = packageManager
+        val appPackage = "com.MobileTicket"
+        return try {
+            pm.getLaunchIntentForPackage(appPackage)
+                ?: throw PackageManager.NameNotFoundException()
+        } catch (e: Exception) {
+            // 未安装 APP，打开手机端网页
+            Intent(Intent.ACTION_VIEW,
+                android.net.Uri.parse("https://kyfw.12306.cn/otn/leftTicket/init"))
+                .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        }
     }
 
     private fun vibrate() {
