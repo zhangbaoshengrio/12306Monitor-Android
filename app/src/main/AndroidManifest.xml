@@ -26,6 +26,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.LoginActivity"
+            android:exported="false" />
+
         <service
             android:name=".service.MonitorService"
             android:exported="false"

@@ -1,8 +1,11 @@
 package com.wizpizz.ticket12306.ui
 
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,8 +43,18 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
     val boardSelected by vm.boardStationSelected.collectAsState()
     val destSelected by vm.destStationSelected.collectAsState()
 
+    val context = LocalContext.current
     var showBoardPicker by remember { mutableStateOf(false) }
     var showDestPicker by remember { mutableStateOf(false) }
+
+    val loginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val cookie = result.data?.getStringExtra(EXTRA_COOKIE) ?: ""
+            if (cookie.isNotBlank()) vm.cookieInput.value = cookie
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -133,12 +146,24 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             OutlinedTextField(
                 value = cookieInput,
                 onValueChange = { vm.cookieInput.value = it },
-                label = { Text("12306 Cookie（登录后从浏览器复制）") },
+                label = { Text("12306 Cookie") },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp),
                 enabled = !isRunning,
                 maxLines = 4,
                 placeholder = { Text("JSESSIONID=...; tk=...", fontSize = 12.sp) }
             )
+            if (!isRunning) {
+                OutlinedButton(
+                    onClick = {
+                        loginLauncher.launch(
+                            Intent(context, LoginActivity::class.java)
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("登录 12306 自动获取 Cookie")
+                }
+            }
 
             // ── 轮询间隔 ──────────────────────────────────────────
             OutlinedTextField(
