@@ -46,8 +46,14 @@ class TicketApi(private val cookie: String) {
 
     /**
      * 查询从 from 到 to 的列车余票列表
+     * @param onDiag 异常时回调诊断信息（正常有结果时不调用）
      */
-    fun queryTickets(from: Station, to: Station, date: String): List<TrainTicket> {
+    fun queryTickets(
+        from: Station,
+        to: Station,
+        date: String,
+        onDiag: ((String) -> Unit)? = null
+    ): List<TrainTicket> {
         val url = "$QUERY_URL" +
             "?leftTicketDTO.train_date=$date" +
             "&leftTicketDTO.from_station=${from.code}" +
@@ -66,12 +72,36 @@ class TicketApi(private val cookie: String) {
 
         return try {
             val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return emptyList()
+            val body = response.body?.string() ?: run {
+                onDiag?.invoke("响应体为空")
+                return emptyList()
+            }
             Log.d(TAG, "query ${from.name}→${to.name}: HTTP ${response.code}")
-            if (!response.isSuccessful) return emptyList()
+            if (!response.isSuccessful) {
+                onDiag?.invoke("HTTP ${response.code}")
+                return emptyList()
+            }
+            // 检查 12306 返回的 status 字段
+            val root = try {
+                com.google.gson.JsonParser.parseString(body).asJsonObject
+            } catch (e: Exception) {
+                onDiag?.invoke("响应非 JSON（Cookie 可能已失效）")
+                return emptyList()
+            }
+            if (root.get("status")?.asBoolean != true) {
+                val msg = root.get("c_msg")?.asString ?: root.get("messages")?.asString ?: "status=false"
+                onDiag?.invoke("接口返回失败：$msg（Cookie 失效或请求被拒）")
+                return emptyList()
+            }
+            val results = root.getAsJsonObject("data")?.getAsJsonArray("result")
+            if (results == null || results.size() == 0) {
+                onDiag?.invoke("该日期/区间无班次")
+                return emptyList()
+            }
             parseResult(body)
         } catch (e: Exception) {
             Log.e(TAG, "query failed: ${e.message}")
+            onDiag?.invoke("网络错误：${e.message}")
             emptyList()
         }
     }

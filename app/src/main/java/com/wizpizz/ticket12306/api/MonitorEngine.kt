@@ -36,8 +36,19 @@ class MonitorEngine(private val config: MonitorConfig) {
         }
 
         // ── Step 1: 直查 board→dest，找到途经这两站的车次 ──────────
-        val directTickets = api.queryTickets(config.boardStation, config.destStation, config.date)
-        onLog("${config.boardStation.name} → ${config.destStation.name}：${desc(directTickets)}")
+        if (config.cookie.isBlank()) {
+            onLog("⚠️ Cookie 为空，请先点「登录 12306 自动获取 Cookie」")
+            return emptyList()
+        }
+        var diagMsg: String? = null
+        val directTickets = api.queryTickets(
+            config.boardStation, config.destStation, config.date
+        ) { diagMsg = it }
+        val firstLine = if (diagMsg != null)
+            "${config.boardStation.name} → ${config.destStation.name}：⚠️ $diagMsg"
+        else
+            "${config.boardStation.name} → ${config.destStation.name}：${desc(directTickets)}"
+        onLog(firstLine)
         found.addAll(directTickets)
 
         val trainMeta = directTickets
