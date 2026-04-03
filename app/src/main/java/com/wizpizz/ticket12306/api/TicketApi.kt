@@ -85,12 +85,12 @@ class TicketApi(private val cookie: String) {
             val root = try {
                 com.google.gson.JsonParser.parseString(body).asJsonObject
             } catch (e: Exception) {
-                onDiag?.invoke("响应非 JSON（Cookie 可能已失效）")
+                onDiag?.invoke("响应非 JSON，前200字：${body.take(200)}")
                 return emptyList()
             }
             if (root.get("status")?.asBoolean != true) {
-                val msg = root.get("c_msg")?.asString ?: root.get("messages")?.asString ?: "status=false"
-                onDiag?.invoke("接口返回失败：$msg（Cookie 失效或请求被拒）")
+                val msg = root.get("c_msg")?.asString ?: root.get("messages")?.asString ?: body.take(200)
+                onDiag?.invoke("接口返回：$msg")
                 return emptyList()
             }
             val results = root.getAsJsonObject("data")?.getAsJsonArray("result")
