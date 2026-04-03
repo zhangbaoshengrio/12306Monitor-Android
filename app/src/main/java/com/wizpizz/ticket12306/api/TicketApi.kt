@@ -1,6 +1,7 @@
 package com.wizpizz.ticket12306.api
 
 import android.util.Log
+import android.webkit.CookieManager
 import com.google.gson.JsonParser
 import com.wizpizz.ticket12306.model.Station
 import com.wizpizz.ticket12306.model.StationData
@@ -39,7 +40,20 @@ private const val IDX_WZ = 26    // 无座
 
 class TicketApi(private val cookie: String) {
 
+    init {
+        // 如果用户手动填了 cookie，注入到 WebView CookieManager，
+        // 这样 WebViewCookieJar 也能读到它
+        if (cookie.isNotBlank()) {
+            val wvCm = CookieManager.getInstance()
+            cookie.split(";").forEach { part ->
+                wvCm.setCookie("https://kyfw.12306.cn", part.trim())
+            }
+            wvCm.flush()
+        }
+    }
+
     private val client = OkHttpClient.Builder()
+        .cookieJar(WebViewCookieJar)   // 直接用 WebView 的 session，无需手动传 Cookie 头
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
@@ -68,7 +82,6 @@ class TicketApi(private val cookie: String) {
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("Accept-Language", "zh-CN,zh;q=0.9")
             .header("X-Requested-With", "XMLHttpRequest")
-            .header("Cookie", cookie)
             .build()
 
         return try {
@@ -130,7 +143,6 @@ class TicketApi(private val cookie: String) {
             .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("X-Requested-With", "XMLHttpRequest")
-            .header("Cookie", cookie)
             .build()
 
         return try {
@@ -178,7 +190,6 @@ class TicketApi(private val cookie: String) {
             .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("X-Requested-With", "XMLHttpRequest")
-            .header("Cookie", cookie)
             .build()
 
         return try {
