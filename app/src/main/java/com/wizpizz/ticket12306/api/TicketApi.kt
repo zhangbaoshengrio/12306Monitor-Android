@@ -65,8 +65,9 @@ class TicketApi(private val cookie: String) {
             .get()
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
             .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
-            .header("Accept", "*/*")
+            .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .header("X-Requested-With", "XMLHttpRequest")
             .header("Cookie", cookie)
             .build()
 
@@ -127,7 +128,8 @@ class TicketApi(private val cookie: String) {
             .get()
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
             .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
-            .header("Accept", "*/*")
+            .header("Accept", "application/json, text/javascript, */*; q=0.01")
+            .header("X-Requested-With", "XMLHttpRequest")
             .header("Cookie", cookie)
             .build()
 
@@ -174,7 +176,8 @@ class TicketApi(private val cookie: String) {
             .get()
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
             .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
-            .header("Accept", "*/*")
+            .header("Accept", "application/json, text/javascript, */*; q=0.01")
+            .header("X-Requested-With", "XMLHttpRequest")
             .header("Cookie", cookie)
             .build()
 
