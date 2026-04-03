@@ -23,6 +23,7 @@ const val EXTRA_COOKIE = "cookie_result"
 
 private const val LOGIN_URL = "https://kyfw.12306.cn/otn/resources/login.html"
 private const val HOME_URL = "https://kyfw.12306.cn/otn/view/index.html"
+private const val TICKET_INIT_URL = "https://kyfw.12306.cn/otn/leftTicket/init"
 
 class LoginActivity : ComponentActivity() {
 
@@ -57,6 +58,7 @@ private fun LoginScreen(
     onLoginSuccess: (String) -> Unit
 ) {
     var pageTitle by remember { mutableStateOf("12306 登录") }
+    var loggedIn by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -90,15 +92,26 @@ private fun LoginScreen(
                         override fun onPageFinished(view: WebView, url: String) {
                             pageTitle = view.title ?: "12306 登录"
 
-                            // 检测登录成功：跳转到首页或个人中心
-                            if (url.contains("index.html") ||
-                                url.contains("userLogin") && url.contains("welcome") ||
-                                url.contains("otn/view/index")
-                            ) {
-                                val cookie = CookieManager.getInstance()
-                                    .getCookie("kyfw.12306.cn") ?: ""
-                                if (cookie.isNotBlank()) {
-                                    onLoginSuccess(cookie)
+                            if (!loggedIn) {
+                                // 检测登录成功：跳转到首页
+                                if (url.contains("index.html") ||
+                                    url.contains("userLogin") && url.contains("welcome") ||
+                                    url.contains("otn/view/index")
+                                ) {
+                                    loggedIn = true
+                                    pageTitle = "正在准备查票环境..."
+                                    // 登录后先访问查票页，让 12306 设置必要的 session cookie
+                                    view.loadUrl(TICKET_INIT_URL)
+                                }
+                            } else {
+                                // 已登录，等查票页加载完再提取 cookie
+                                if (url.contains("leftTicket/init")) {
+                                    CookieManager.getInstance().flush()
+                                    val cookie = CookieManager.getInstance()
+                                        .getCookie("kyfw.12306.cn") ?: ""
+                                    if (cookie.isNotBlank()) {
+                                        onLoginSuccess(cookie)
+                                    }
                                 }
                             }
                         }
