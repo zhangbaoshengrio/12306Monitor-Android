@@ -12,8 +12,8 @@ android {
         applicationId = "com.wizpizz.ticket12306"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     buildTypes {
@@ -29,6 +29,17 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+
+    testOptions {
+        unitTests.all { test ->
+            // 联网的真实查询测试：12306 的证书由 CFCA 签发，JDK 自带的信任库里没有。
+            // 跑的时候用 LIVE_TRUSTSTORE 指定一个只含 CFCA 根证书的信任库（密码 changeit）。
+            val trust = System.getenv("LIVE_TRUSTSTORE")
+            if (System.getenv("LIVE_12306") == "1" && trust != null) {
+                test.jvmArgs("-Djavax.net.ssl.trustStore=$trust", "-Djavax.net.ssl.trustStorePassword=changeit")
+            }
+        }
+    }
 }
 
 dependencies {
@@ -48,4 +59,5 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation(libs.junit)
 }

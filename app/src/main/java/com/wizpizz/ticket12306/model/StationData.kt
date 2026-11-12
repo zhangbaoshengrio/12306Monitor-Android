@@ -1,81 +1,68 @@
 package com.wizpizz.ticket12306.model
 
+import java.io.InputStream
+
 /**
- * 常用站名与电报码对照表
- * 完整列表见：https://kyfw.12306.cn/otn/resources/js/framework/station_name.js
+ * 12306 官方站名表（assets/station_name.js，3000+ 个站）。
+ * 使用前要先 load 一次。来源：https://kyfw.12306.cn/otn/resources/js/framework/station_name.js
  */
 object StationData {
 
-    // 预置常用站（用于自动补全）
-    val commonStations = listOf(
-        Station("北京", "BJP"),
-        Station("北京南", "VNP"),
-        Station("北京西", "BXP"),
-        Station("上海", "SHH"),
-        Station("上海虹桥", "AOH"),
-        Station("广州南", "IZQ"),
-        Station("深圳北", "IOQ"),
-        Station("成都东", "ICW"),
-        Station("武汉", "WHN"),
-        Station("南京南", "NKH"),
-        Station("杭州东", "HGH"),
-        Station("西安北", "EAY"),
-        Station("郑州东", "ZHH"),
-        Station("合肥南", "HFN"),
-        Station("合肥", "HFH"),
-        Station("巢湖东", "CHH"),
-        Station("滁州", "CZQ"),
-        Station("定远", "DYH"),
-        Station("六安", "LAN"),
-        Station("叶集", "YJH"),
-        Station("金寨", "JJZ"),
-        Station("麻城北", "MCB"),
-        Station("红安西", "HAX"),
-        Station("汉口", "HHK"),
-        Station("汉川", "HHC"),
-        Station("仙桃西", "XTX"),
-        Station("荆州", "JGZ"),
-        Station("枝江北", "ZJC"),
-        Station("宜昌东", "YCD"),
-        Station("芜湖", "WHH"),
-        Station("芜湖北", "WUH"),
-        Station("南京", "NJH"),
-        Station("镇江南", "ZJH"),
-        Station("常州北", "CZH"),
-        Station("无锡东", "WXH"),
-        Station("苏州北", "SZH"),
-        Station("嘉兴南", "JXQ"),
-        Station("重庆北", "CQW"),
-        Station("重庆西", "CQX"),
-        Station("长沙南", "LHH"),
-        Station("南昌西", "KNW"),
-        Station("福州南", "FZS"),
-        Station("厦门北", "AMF"),
-        Station("济南西", "JNK"),
-        Station("青岛北", "QDK"),
-        Station("哈尔滨西", "HBB"),
-        Station("沈阳北", "SYB"),
-        Station("大连北", "DLT"),
-        Station("天津南", "TJP"),
-        Station("石家庄", "SJP"),
-        Station("太原南", "TYV"),
-        Station("呼和浩特东", "HHE"),
-        Station("乌鲁木齐", "WLQ"),
-        Station("拉萨", "LSA"),
-        Station("昆明南", "KMQ"),
-        Station("贵阳北", "GYV"),
-        Station("南宁东", "NNZ"),
-        Station("兰州西", "LZX"),
+    private val commonNames = listOf(
+        "北京南", "上海虹桥", "广州南", "深圳北", "成都东", "武汉", "南京南", "杭州东",
+        "西安北", "郑州东", "长沙南", "合肥南", "重庆北", "天津", "济南西", "青岛"
     )
 
-    fun search(query: String): List<Station> {
-        if (query.isBlank()) return commonStations
-        return commonStations.filter {
-            it.name.contains(query) || it.code.contains(query.uppercase())
+    @Volatile private var all: List<Station> = emptyList()
+    @Volatile private var byName: Map<String, Station> = emptyMap()
+    @Volatile private var byCode: Map<String, Station> = emptyMap()
+
+    val isLoaded: Boolean get() = all.isNotEmpty()
+
+    /** 全部车站，按 12306 站名表的顺序（大体按拼音）。 */
+    val stations: List<Station> get() = all
+
+    /** 解析 station_name.js 的内容。每个站形如 `bjb|北京北|VAP|beijingbei|bjb|0|...`，以 @ 分隔。 */
+    fun parse(text: String): List<Station> =
+        text.split('@').drop(1).mapNotNull { rec ->
+            val p = rec.trim().trim('\'', ';').split('|')
+            if (p.size < 5 || p[1].isBlank() || p[2].isBlank()) null
+            else Station(name = p[1], code = p[2], pinyin = p[3], initials = p[4])
         }
+
+    fun load(text: String) {
+        val list = parse(text)
+        all = list
+        byName = list.associateBy { it.name }
+        byCode = list.associateBy { it.code }
     }
 
-    /** 按站名精确查找（用于 czxx 经停站反查电报码）*/
-    fun findByName(name: String): Station? =
-        commonStations.firstOrNull { it.name == name }
+    fun load(input: InputStream) = load(input.bufferedReader(Charsets.UTF_8).use { it.readText() })
+
+    fun findByName(name: String): Station? = byName[name]
+
+    fun findByCode(code: String): Station? = byCode[code]
+
+    /** 按站名、拼音、拼音首字母搜索；没有输入时返回常用站。 */
+    fun search(query: String, limit: Int = 50): List<Station> {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return commonNames.mapNotNull { byName[it] }
+        return all
+            .mapNotNull { s -> rank(s, q)?.let { it to s } }
+            .sortedWith(compareBy({ it.first }, { it.second.name.length }))
+            .take(limit)
+            .map { it.second }
+    }
+
+    private fun rank(s: Station, q: String): Int? = when {
+        s.name == q -> 0
+        s.name.startsWith(q) -> 1
+        s.initials == q -> 2
+        s.initials.startsWith(q) -> 3
+        s.pinyin.startsWith(q) -> 4
+        s.name.contains(q) -> 5
+        s.pinyin.contains(q) -> 6
+        s.code.equals(q, ignoreCase = true) -> 7
+        else -> null
+    }
 }

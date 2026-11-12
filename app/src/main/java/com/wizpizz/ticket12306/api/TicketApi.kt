@@ -1,269 +1,141 @@
 package com.wizpizz.ticket12306.api
 
-import android.util.Log
-import android.webkit.CookieManager
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import com.wizpizz.ticket12306.model.Station
-import com.wizpizz.ticket12306.model.StationData
-import com.wizpizz.ticket12306.model.TrainTicket
+import com.wizpizz.ticket12306.model.StopInfo
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
-private const val TAG = "TicketApi"
+private const val BASE = "https://kyfw.12306.cn/otn"
+private const val UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-// 余票查询接口
-private const val QUERY_URL = "https://kyfw.12306.cn/otn/leftTicket/query"
-// 经停站查询接口
-private const val STOP_URL = "https://kyfw.12306.cn/otn/czxx/queryByTrainNo"
-// 票价查询接口
-private const val PRICE_URL = "https://kyfw.12306.cn/otn/leftTicket/queryTicketPrice"
+/**
+ * 12306 查票接口的客户端。查票不需要登录：先打开一次查询页拿到匿名会话 cookie，再发请求即可。
+ *
+ * 余票查询的接口名会变（现在是 queryG）。接口名过期时 12306 不返回车次，而是在 c_url 里告诉我们新名字，
+ * 这里看到 c_url 就换成新名字重试。
+ */
+class TicketApi(client: OkHttpClient? = null) : TicketService {
 
-// result 字符串 | 分割后各字段的位置
-private const val IDX_TRAIN_NO_INTERNAL = 2  // 内部编号，如 5l000G58300
-private const val IDX_TRAIN_NO = 3           // 展示车次，如 G583
-private const val IDX_FROM_STATION_NAME = 6
-private const val IDX_TO_STATION_NAME = 7
-private const val IDX_DEPART_TIME = 8
-private const val IDX_ARRIVE_TIME = 9
-private const val IDX_FROM_STATION_NO = 10   // 出发站在全程中的序号（价格查询用）
-private const val IDX_TO_STATION_NO = 11     // 到达站在全程中的序号（价格查询用）
-private const val IDX_ORIGIN_CODE = 15       // 本次列车实际始发站电报码
-private const val IDX_TERMINAL_CODE = 16     // 本次列车实际终点站电报码
-private const val IDX_SWZ = 32   // 商务/特等座
-private const val IDX_YDZ = 31   // 一等座
-private const val IDX_EDZ = 30   // 二等座
-private const val IDX_YW = 28    // 硬卧
-private const val IDX_RW = 23    // 软卧
-private const val IDX_YZ = 29    // 硬座
-private const val IDX_WZ = 26    // 无座
-
-class TicketApi(private val cookie: String) {
-
-    init {
-        // 如果用户手动填了 cookie，注入到 WebView CookieManager，
-        // 这样 WebViewCookieJar 也能读到它
-        if (cookie.isNotBlank()) {
-            val wvCm = CookieManager.getInstance()
-            cookie.split(";").forEach { part ->
-                wvCm.setCookie("https://kyfw.12306.cn", part.trim())
-            }
-            wvCm.flush()
-        }
-    }
-
-    private val client = OkHttpClient.Builder()
-        .cookieJar(WebViewCookieJar)   // 直接用 WebView 的 session，无需手动传 Cookie 头
+    private val http: OkHttpClient = client ?: OkHttpClient.Builder()
+        .cookieJar(MemoryCookieJar())
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * 查询从 from 到 to 的列车余票列表
-     * @param onDiag 异常时回调诊断信息（正常有结果时不调用）
-     */
-    fun queryTickets(
-        from: Station,
-        to: Station,
-        date: String,
-        onDiag: ((String) -> Unit)? = null
-    ): List<TrainTicket> {
-        val url = "$QUERY_URL" +
-            "?leftTicketDTO.train_date=$date" +
-            "&leftTicketDTO.from_station=${from.code}" +
-            "&leftTicketDTO.to_station=${to.code}" +
-            "&purpose_codes=ADULT"
+    @Volatile private var queryName = "queryG"
+    @Volatile private var sessionReady = false
 
+    override fun queryTickets(fromCode: String, toCode: String, date: String): QueryResponse {
+        var problem = "未知错误"
+        repeat(MAX_ATTEMPTS) {
+            ensureSession()
+            val (code, body) = get(
+                "$BASE/leftTicket/$queryName" +
+                    "?leftTicketDTO.train_date=$date" +
+                    "&leftTicketDTO.from_station=$fromCode" +
+                    "&leftTicketDTO.to_station=$toCode" +
+                    "&purpose_codes=ADULT"
+            )
+            val root = parseObject(body)
+            if (root == null) {
+                // 返回的不是 JSON（多半是会话失效后的跳转页）：重新拿会话再试
+                sessionReady = false
+                problem = "HTTP $code，返回的不是 JSON"
+                return@repeat
+            }
+            if (root.get("status")?.asBoolean == true) return ResultParser.parseQuery(root)
+
+            val newName = root.get("c_url")?.asString?.substringAfterLast('/')
+            if (newName != null && newName.matches(NAME_RE) && newName != queryName) {
+                queryName = newName
+                problem = "接口名已更新为 $newName"
+                return@repeat
+            }
+            // 12306 给出了明确的错误信息（比如系统繁忙）：重试没有用，直接报出来
+            throw TicketApiException("余票查询失败：" + ResultParser.messageOf(root).ifEmpty { "接口返回 status=false" })
+        }
+        throw TicketApiException("余票查询失败：$problem")
+    }
+
+    override fun getStopNames(train: RawTrain, date: String): List<String> =
+        getStops(train.trainCode, train.originCode, train.terminalCode, date).map { it.name }
+
+    override fun getStops(trainCode: String, originCode: String, terminalCode: String, date: String): List<StopInfo> {
+        val root = getJson(
+            "$BASE/czxx/queryByTrainNo" +
+                "?train_no=$trainCode" +
+                "&from_station_telecode=$originCode" +
+                "&to_station_telecode=$terminalCode" +
+                "&depart_date=$date",
+            "经停站查询"
+        )
+        return ResultParser.parseStops(root)
+    }
+
+    override fun getPrices(
+        trainCode: String, fromStationNo: String, toStationNo: String, seatTypes: String, date: String
+    ): Map<String, String> {
+        val root = getJson(
+            "$BASE/leftTicket/queryTicketPrice" +
+                "?train_no=$trainCode" +
+                "&from_station_no=$fromStationNo" +
+                "&to_station_no=$toStationNo" +
+                "&seat_types=$seatTypes" +
+                "&train_date=$date",
+            "票价查询"
+        )
+        return ResultParser.parsePrices(root)
+    }
+
+    @Synchronized
+    private fun ensureSession() {
+        if (sessionReady) return
+        get("$BASE/leftTicket/init")
+        sessionReady = true
+    }
+
+    private fun getJson(url: String, what: String): JsonObject {
+        ensureSession()
+        val (code, body) = get(url)
+        val root = parseObject(body)
+            ?: run { sessionReady = false; throw TicketApiException("$what 失败：HTTP $code，返回的不是 JSON") }
+        if (root.get("status")?.asBoolean != true) {
+            throw TicketApiException("$what 失败：" + ResultParser.messageOf(root).ifEmpty { "status=false" })
+        }
+        return root
+    }
+
+    /** 返回 (HTTP 状态码, 响应体)。12306 会用 302 状态码返回 JSON 提示，所以不论状态码都把响应体交出去。 */
+    private fun get(url: String): Pair<Int, String> {
         val request = Request.Builder()
             .url(url)
             .get()
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
-            .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
+            .header("User-Agent", UA)
+            .header("Referer", "$BASE/leftTicket/init")
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("Accept-Language", "zh-CN,zh;q=0.9")
             .header("X-Requested-With", "XMLHttpRequest")
             .build()
-
-        return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: run {
-                onDiag?.invoke("响应体为空")
-                return emptyList()
+        try {
+            http.newCall(request).execute().use { r ->
+                return r.code to (r.body?.string() ?: "")
             }
-            Log.d(TAG, "query ${from.name}→${to.name}: HTTP ${response.code}")
-            if (!response.isSuccessful) {
-                onDiag?.invoke("HTTP ${response.code}")
-                return emptyList()
-            }
-            // 检查 12306 返回的 status 字段
-            val root = try {
-                com.google.gson.JsonParser.parseString(body).asJsonObject
-            } catch (e: Exception) {
-                onDiag?.invoke("响应非 JSON，前200字：${body.take(200)}")
-                return emptyList()
-            }
-            if (root.get("status")?.asBoolean != true) {
-                val msg = root.get("c_msg")?.asString ?: root.get("messages")?.asString ?: body.take(200)
-                onDiag?.invoke("接口返回：$msg")
-                return emptyList()
-            }
-            val results = root.getAsJsonObject("data")?.getAsJsonArray("result")
-            if (results == null || results.size() == 0) {
-                onDiag?.invoke("该日期/区间无班次")
-                return emptyList()
-            }
-            parseResult(body)
-        } catch (e: Exception) {
-            Log.e(TAG, "query failed: ${e.message}")
-            onDiag?.invoke("网络错误：${e.message}")
-            emptyList()
+        } catch (e: java.io.IOException) {
+            throw TicketApiException("网络错误：${e.message}")
         }
     }
 
-    /**
-     * 获取车次完整经停站列表（用于找合肥南前面的站）
-     * originCode/terminalCode 为该次车实际始发/终到站电报码
-     */
-    fun getStopList(
-        trainNoInternal: String,
-        originCode: String,
-        terminalCode: String,
-        date: String
-    ): List<Station> {
-        val url = "$STOP_URL" +
-            "?train_no=${trainNoInternal}" +
-            "&from_station_telecode=${originCode}" +
-            "&to_station_telecode=${terminalCode}" +
-            "&depart_date=$date"
-
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
-            .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
-            .header("Accept", "application/json, text/javascript, */*; q=0.01")
-            .header("X-Requested-With", "XMLHttpRequest")
-            .build()
-
-        return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return emptyList()
-            if (!response.isSuccessful) return emptyList()
-            val root = JsonParser.parseString(body).asJsonObject
-            if (root.get("status")?.asBoolean != true) return emptyList()
-            val data = root.getAsJsonObject("data")
-                ?.getAsJsonArray("data") ?: return emptyList()
-
-            data.mapNotNull { el ->
-                val name = el.asJsonObject.get("station_name")?.asString?.trim()
-                    ?: return@mapNotNull null
-                // 用站名反查电报码
-                StationData.findByName(name)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "getStopList failed: ${e.message}")
-            emptyList()
-        }
+    private fun parseObject(body: String): JsonObject? = try {
+        JsonParser.parseString(body).takeIf { it.isJsonObject }?.asJsonObject
+    } catch (e: Exception) {
+        null
     }
 
-    /**
-     * 查询指定车次/区间的票价
-     * seat_types 常用值：O=二等 M=一等 9=商务 3=硬卧 4=软卧 1=硬座
-     */
-    fun queryPrice(
-        trainNoInternal: String,
-        fromStationNo: String,
-        toStationNo: String,
-        date: String
-    ): Map<String, String> {
-        val url = "$PRICE_URL" +
-            "?train_no=$trainNoInternal" +
-            "&from_station_no=$fromStationNo" +
-            "&to_station_no=$toStationNo" +
-            "&seat_types=O9M953141" +
-            "&train_date=$date"
-
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
-            .header("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
-            .header("Accept", "application/json, text/javascript, */*; q=0.01")
-            .header("X-Requested-With", "XMLHttpRequest")
-            .build()
-
-        return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return emptyMap()
-            if (!response.isSuccessful) return emptyMap()
-            val root = JsonParser.parseString(body).asJsonObject
-            if (root.get("status")?.asBoolean != true) return emptyMap()
-            val data = root.getAsJsonObject("data") ?: return emptyMap()
-
-            // 价格接口返回席别代码 → 价格字符串，映射为可读名称
-            buildMap {
-                fun tryPut(humanName: String, vararg keys: String) {
-                    for (k in keys) {
-                        val v = data.get(k)?.asString?.trim() ?: continue
-                        if (v.isNotEmpty()) { put(humanName, v); return }
-                    }
-                }
-                tryPut("商务/特等座", "9", "P", "0")
-                tryPut("一等座", "M")
-                tryPut("二等座", "O")
-                tryPut("高级软卧", "6")
-                tryPut("软卧", "4")
-                tryPut("硬卧", "3")
-                tryPut("硬座", "1")
-                tryPut("无座", "WZ")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "queryPrice failed: ${e.message}")
-            emptyMap()
-        }
-    }
-
-    private fun parseResult(json: String): List<TrainTicket> {
-        return try {
-            val root = JsonParser.parseString(json).asJsonObject
-            if (root.get("status")?.asBoolean != true) return emptyList()
-            val results = root.getAsJsonObject("data")
-                ?.getAsJsonArray("result") ?: return emptyList()
-
-            results.mapNotNull { el ->
-                val fields = el.asString.split("|")
-                if (fields.size < 35) return@mapNotNull null
-                // 席别余量（空 = 无票，不过滤，全部展示）
-                val seats = buildMap<String, String> {
-                    fun add(key: String, idx: Int) {
-                        val v = fields[idx].trim()
-                        if (v.isNotEmpty() && v != "0") put(key, v)
-                    }
-                    add("商务/特等座", IDX_SWZ)
-                    add("一等座", IDX_YDZ)
-                    add("二等座", IDX_EDZ)
-                    add("硬卧", IDX_YW)
-                    add("软卧", IDX_RW)
-                    add("硬座", IDX_YZ)
-                    add("无座", IDX_WZ)
-                }
-                TrainTicket(
-                    trainNo = fields[IDX_TRAIN_NO].trim(),
-                    trainNoInternal = fields[IDX_TRAIN_NO_INTERNAL].trim(),
-                    originCode = fields.getOrNull(IDX_ORIGIN_CODE)?.trim() ?: "",
-                    terminalCode = fields.getOrNull(IDX_TERMINAL_CODE)?.trim() ?: "",
-                    fromStation = fields[IDX_FROM_STATION_NAME].trim(),
-                    toStation = fields[IDX_TO_STATION_NAME].trim(),
-                    fromStationNo = fields.getOrNull(IDX_FROM_STATION_NO)?.trim() ?: "",
-                    toStationNo = fields.getOrNull(IDX_TO_STATION_NO)?.trim() ?: "",
-                    departTime = fields[IDX_DEPART_TIME].trim(),
-                    arriveTime = fields[IDX_ARRIVE_TIME].trim(),
-                    seats = seats
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "parse failed: ${e.message}")
-            emptyList()
-        }
+    private companion object {
+        const val MAX_ATTEMPTS = 3
+        val NAME_RE = Regex("^[A-Za-z0-9]{1,20}$")
     }
 }

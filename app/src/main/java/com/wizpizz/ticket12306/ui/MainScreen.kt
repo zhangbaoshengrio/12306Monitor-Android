@@ -1,412 +1,790 @@
 package com.wizpizz.ticket12306.ui
 
-import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import com.wizpizz.ticket12306.model.StopInfo
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wizpizz.ticket12306.model.RideKind
 import com.wizpizz.ticket12306.model.Station
 import com.wizpizz.ticket12306.model.StationData
 import com.wizpizz.ticket12306.model.TrainTicket
+import java.time.LocalDate
+import java.time.format.TextStyle
+import java.util.Locale
+
+private val Blue = Color(0xFF1B6AD0)
+private val Orange = Color(0xFFC2410C)
+private val Green = Color(0xFF1B7F45)
+private val Grey = Color(0xFF5F6B7A)
+private val Bg = Color(0xFFF2F5F9)
+private val Line = Color(0xFFE1E6ED)
+
+@Composable
+fun MainScreen(vm: MainViewModel = viewModel()) {
+    val showResults by vm.showResults.collectAsState()
+    BackHandler(enabled = showResults) { vm.backToSearch() }
+    Box(Modifier.fillMaxSize().background(Bg)) {
+        if (showResults) ResultsScreen(vm) else SearchScreen(vm)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 搜索页
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun SearchScreen(vm: MainViewModel) {
+    val board by vm.boardStationSelected.collectAsState()
+    val dest by vm.destStationSelected.collectAsState()
+    val date by vm.dateInput.collectAsState()
+    val error by vm.errorMsg.collectAsState()
+    val searchAll by vm.searchAll.collectAsState()
+    val recent by vm.recentStations.collectAsState()
+    var picking by remember { mutableStateOf<Boolean?>(null) }   // true = 上车站, false = 终点站
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Column(
+            Modifier.fillMaxWidth().background(Blue)
+                .statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 56.dp)
+        ) {
+            Text("买短乘长查票", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text("直达票售罄？查询可在上车站乘坐的其他票段", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+        }
+
+        Card(
+            modifier = Modifier.padding(horizontal = 16.dp).offset(y = (-36).dp).fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(2.dp)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Box {
+                    Column {
+                        StationRow("上车站", "你要上车的站", board) { picking = true }
+                        HorizontalDivider(color = Line)
+                        StationRow("终点站", "你最终要去的站", dest) { picking = false }
+                    }
+                    Surface(
+                        onClick = { vm.swapStations() },
+                        shape = CircleShape,
+                        color = Color.White,
+                        border = BorderStroke(1.dp, Line),
+                        modifier = Modifier.align(Alignment.CenterEnd).size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("⇅", color = Blue, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                HorizontalDivider(color = Line)
+                Spacer(Modifier.height(12.dp))
+                Text("出发日期", color = Grey, fontSize = 12.sp)
+                OutlinedTextField(
+                    value = date,
+                    onValueChange = { vm.dateInput.value = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = { Text(weekdayOf(date) ?: "格式：2026-11-13", fontSize = 12.sp) }
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("今天" to 0L, "明天" to 1L, "后天" to 2L).forEach { (label, off) ->
+                        val selected = date.trim() == LocalDate.now().plusDays(off).toString()
+                        FilterChip(
+                            selected = selected,
+                            onClick = { vm.setDateOffset(off) },
+                            label = { Text(label) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Blue.copy(alpha = 0.12f), selectedLabelColor = Blue)
+                        )
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("直达有票时仍查询买短乘长方案", fontSize = 14.sp)
+                        Text("关闭后，仅在直达票售罄时查询", color = Grey, fontSize = 12.sp)
+                    }
+                    Switch(checked = searchAll, onCheckedChange = { vm.searchAll.value = it })
+                }
+                error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = { vm.queryOnce() },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(26.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Blue)
+                ) { Text("查询", fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+            }
+        }
+
+        val context = LocalContext.current
+        val version = remember {
+            runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
+        }
+        Text(
+            "版本 $version", color = Color(0xFF9AA5B3), fontSize = 12.sp,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp), textAlign = TextAlign.Center
+        )
+    }
+
+    picking?.let { isBoard ->
+        StationPickerScreen(
+            recent = recent,
+            onSelected = {
+                if (isBoard) vm.boardStationSelected.value = it else vm.destStationSelected.value = it
+                vm.addRecent(it)
+                picking = null
+            },
+            onBack = { picking = null }
+        )
+    }
+}
+
+@Composable
+private fun StationRow(label: String, hint: String, station: Station?, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 14.dp)) {
+        Text(label, color = Grey, fontSize = 12.sp)
+        Spacer(Modifier.height(2.dp))
+        if (station != null) Text(station.name, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        else Text(hint, fontSize = 20.sp, color = Color(0xFFA0AAB8))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 结果页
+// ─────────────────────────────────────────────────────────────
+
+private enum class SortBy(val label: String) { DEPART("出发时间"), DURATION("耗时最短"), SEATS("有票优先") }
+
+private data class Filters(
+    val trainTypes: Set<String> = emptySet(),   // G/C、D、其他
+    val seats: Set<String> = emptySet(),        // 席别名：只留有这些席别余票的票
+    val kinds: Set<RideKind> = emptySet(),
+    val froms: Set<String> = emptySet(),
+    val tos: Set<String> = emptySet(),
+    val times: Set<Int> = emptySet()            // 出发时段 0..3
+) {
+    val count get() = listOf(trainTypes, seats, kinds, froms, tos, times).count { it.isNotEmpty() }
+}
+
+private fun trainType(no: String) = when {
+    no.startsWith("G") || no.startsWith("C") -> "高铁/城际"
+    no.startsWith("D") -> "动车"
+    else -> "其他"
+}
+
+private fun timeBucket(t: String) = ((t.take(2).toIntOrNull() ?: 0) / 6).coerceIn(0, 3)
+private val TimeLabels = listOf("00:00–06:00", "06:00–12:00", "12:00–18:00", "18:00–24:00")
+
+private fun Filters.matches(t: TrainTicket) =
+    (trainTypes.isEmpty() || trainType(t.trainNo) in trainTypes) &&
+        (seats.isEmpty() || t.seats.any { it.available && it.label in seats }) &&
+        (kinds.isEmpty() || t.kind in kinds) &&
+        (froms.isEmpty() || t.fromName in froms) &&
+        (tos.isEmpty() || t.toName in tos) &&
+        (times.isEmpty() || timeBucket(t.departTime) in times)
+
+/** 一趟车：full 是这趟车查到的全部票段，shown 是通过筛选后要显示的。 */
+private data class TrainGroup(val full: List<TrainTicket>, val shown: List<TrainTicket>) {
+    val head: TrainTicket get() = full.firstOrNull { it.kind == RideKind.DIRECT } ?: full.first()
+}
+
+private fun minutes(d: String): Int {
+    val p = d.split(":")
+    return (p.getOrNull(0)?.toIntOrNull() ?: 0) * 60 + (p.getOrNull(1)?.toIntOrNull() ?: 0)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(vm: MainViewModel = viewModel()) {
-    val isRunning by vm.isRunning.collectAsState()
-    val isQuerying by vm.isQuerying.collectAsState()
-    val queryResult by vm.queryResult.collectAsState()
-    val queryLog by vm.queryLog.collectAsState()
-    val foundTickets by vm.foundTickets.collectAsState()
-    val errorMsg by vm.errorMsg.collectAsState()
+private fun ResultsScreen(vm: MainViewModel) {
+    val board by vm.boardStationSelected.collectAsState()
+    val dest by vm.destStationSelected.collectAsState()
+    val date by vm.dateInput.collectAsState()
+    val querying by vm.isQuerying.collectAsState()
+    val result by vm.queryResult.collectAsState()
+    val log by vm.queryLog.collectAsState()
+    val error by vm.errorMsg.collectAsState()
+    val loading by vm.loadingPrices.collectAsState()
+    val stopsByTrain by vm.stops.collectAsState()
+    val loadingStops by vm.loadingStops.collectAsState()
 
-    val boardInput by vm.boardStationInput.collectAsState()
-    val destInput by vm.destStationInput.collectAsState()
-    val dateInput by vm.dateInput.collectAsState()
-    val cookieInput by vm.cookieInput.collectAsState()
-    val intervalInput by vm.intervalInput.collectAsState()
-    val boardSelected by vm.boardStationSelected.collectAsState()
-    val destSelected by vm.destStationSelected.collectAsState()
+    var filters by remember { mutableStateOf(Filters()) }
+    var sort by remember { mutableStateOf(SortBy.DEPART) }
+    var showFilter by remember { mutableStateOf(false) }
+    var showLog by remember { mutableStateOf(false) }
 
-    val context = LocalContext.current
-    var showBoardPicker by remember { mutableStateOf(false) }
-    var showDestPicker by remember { mutableStateOf(false) }
-
-    val loginLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val cookie = result.data?.getStringExtra(EXTRA_COOKIE) ?: ""
-            if (cookie.isNotBlank()) vm.cookieInput.value = cookie
+    val all = result ?: emptyList()
+    val groups = remember(all, filters, sort) {
+        // 查询结果已经按车次分组、组内按查询顺序排好；筛选只影响组里显示哪些票段
+        val list = all.groupBy { it.trainCode }.values
+            .map { full -> TrainGroup(full, full.filter { filters.matches(it) }) }
+            .filter { it.shown.isNotEmpty() }
+        when (sort) {
+            SortBy.DEPART -> list
+            SortBy.DURATION -> list.sortedBy { minutes(it.head.duration) }
+            SortBy.SEATS -> list.sortedWith(compareByDescending<TrainGroup> { g -> g.full.any { it.best } }.thenBy { it.head.departTime })
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("12306 余票查询") })
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+    Column(Modifier.fillMaxSize()) {
+        // 顶栏：返回 + 路线
+        Row(
+            Modifier.fillMaxWidth().background(Blue).statusBarsPadding().padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-
-            // ── 错误提示 ──────────────────────────────────────────
-            errorMsg?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+            TextButton(onClick = { vm.backToSearch() }) { Text("‹ 返回", color = Color.White, fontSize = 15.sp) }
+            Text(
+                "${board?.name ?: ""}  →  ${dest?.name ?: ""}",
+                color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.width(64.dp))
+        }
+        // 日期条
+        Row(
+            Modifier.fillMaxWidth().background(Blue).padding(bottom = 10.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically
+        ) {
+            val canGoBack = runCatching { LocalDate.parse(date.trim()).isAfter(LocalDate.now()) }.getOrDefault(false)
+            TextButton(onClick = { vm.shiftDate(-1) }, enabled = canGoBack && !querying) {
+                Text("‹ 前一天", color = Color.White.copy(alpha = if (canGoBack) 1f else 0.4f))
             }
-
-            // ── 经过站选择 ────────────────────────────────────────
-            OutlinedTextField(
-                value = boardSelected?.let { "${it.name} (${it.code})" } ?: boardInput,
-                onValueChange = {
-                    vm.boardStationInput.value = it
-                    vm.boardStationSelected.value = null
-                },
-                label = { Text("经过站（你上车的站）") },
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
-                    TextButton(onClick = { showBoardPicker = true }) { Text("选择") }
-                },
-                enabled = !isRunning,
-                singleLine = true
+            Text(
+                date.trim().drop(5) + (weekdayOf(date)?.let { "  $it" } ?: ""),
+                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp
             )
-
-            // ── 终点站选择 ────────────────────────────────────────
-            OutlinedTextField(
-                value = destSelected?.let { "${it.name} (${it.code})" } ?: destInput,
-                onValueChange = {
-                    vm.destStationInput.value = it
-                    vm.destStationSelected.value = null
-                },
-                label = { Text("终点站（最终目的地）") },
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
-                    TextButton(onClick = { showDestPicker = true }) { Text("选择") }
-                },
-                enabled = !isRunning,
-                singleLine = true
+            TextButton(onClick = { vm.shiftDate(1) }, enabled = !querying) { Text("后一天 ›", color = Color.White) }
+        }
+        // 筛选 + 排序
+        Row(
+            Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = filters.count > 0,
+                onClick = { showFilter = true },
+                label = { Text(if (filters.count > 0) "筛选 ${filters.count}" else "筛选") },
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Blue.copy(alpha = 0.12f), selectedLabelColor = Blue)
             )
-
-            // ── 日期 ──────────────────────────────────────────────
-            OutlinedTextField(
-                value = dateInput,
-                onValueChange = { vm.dateInput.value = it },
-                label = { Text("日期 (yyyy-MM-dd)") },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isRunning,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-            )
-
-            // ── Cookie ────────────────────────────────────────────
-            OutlinedTextField(
-                value = cookieInput,
-                onValueChange = { vm.cookieInput.value = it },
-                label = { Text("12306 Cookie") },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp),
-                enabled = !isRunning,
-                maxLines = 4,
-                placeholder = { Text("JSESSIONID=...; tk=...", fontSize = 12.sp) }
-            )
-            if (!isRunning) {
-                OutlinedButton(
-                    onClick = {
-                        loginLauncher.launch(
-                            Intent(context, LoginActivity::class.java)
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("登录 12306 自动获取 Cookie")
-                }
+            Spacer(Modifier.weight(1f))
+            SortBy.values().forEach {
+                Text(
+                    it.label,
+                    color = if (sort == it) Blue else Grey,
+                    fontWeight = if (sort == it) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 13.sp,
+                    modifier = Modifier.clickable { sort = it }.padding(horizontal = 6.dp, vertical = 6.dp)
+                )
             }
+        }
+        HorizontalDivider(color = Line)
 
-            // ── 轮询间隔 ──────────────────────────────────────────
-            OutlinedTextField(
-                value = intervalInput,
-                onValueChange = { vm.intervalInput.value = it },
-                label = { Text("轮询间隔（秒，建议 8~15）") },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isRunning,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-            )
-
-            // ── 操作按钮 ──────────────────────────────────────────
-            val busy = isRunning || isQuerying
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { vm.queryOnce() },
-                    modifier = Modifier.weight(1f).height(50.dp),
-                    enabled = !busy
-                ) {
-                    if (isQuerying) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    } else {
-                        Text("查询", fontSize = 16.sp)
-                    }
-                }
-                OutlinedButton(
-                    onClick = { if (isRunning) vm.stopMonitor() else vm.startMonitor() },
-                    modifier = Modifier.weight(1f).height(50.dp),
-                    enabled = !isQuerying
-                ) {
-                    Text(if (isRunning) "停止监控" else "持续监控", fontSize = 15.sp)
-                }
+        when {
+            querying && all.isEmpty() -> Column(
+                Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(color = Blue)
+                Spacer(Modifier.height(12.dp))
+                Text("正在查询…", color = Grey)
+                Spacer(Modifier.height(12.dp))
+                log.takeLast(4).forEach { Text(it, fontSize = 12.sp, color = Grey) }
             }
-
-            // ── 查询日志 ──────────────────────────────────────────
-            if (queryLog.isNotEmpty()) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        queryLog.forEach { line ->
-                            Text(line, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (isQuerying) {
-                            Text("查询中...", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                }
-            }
-
-            // ── 查询结果 ──────────────────────────────────────────
-            val displayTickets = if (isRunning) foundTickets else queryResult ?: emptyList()
-            val hasQueried = queryResult != null || isRunning
-
-            if (hasQueried) {
-                Divider()
-                if (displayTickets.isEmpty() && !isQuerying) {
+            error != null && all.isEmpty() -> Text(error ?: "", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(24.dp))
+            else -> LazyColumn(
+                contentPadding = PaddingValues(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                item {
+                    val have = groups.count { g -> g.full.any { it.best } }
                     Text(
-                        "未查到任何车次",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 15.sp
+                        if (groups.isEmpty()) "没有符合条件的车次" else "共 ${groups.size} 趟车，其中 $have 趟有可购票段",
+                        color = if (have > 0) Green else Grey, fontWeight = FontWeight.Bold, fontSize = 14.sp
                     )
-                } else if (displayTickets.isNotEmpty()) {
-                    val withTickets = displayTickets.count { it.seats.isNotEmpty() }
-                    val summary = if (withTickets > 0)
-                        "共 ${displayTickets.size} 个区间  ★ 有票 $withTickets 个"
-                    else
-                        "共 ${displayTickets.size} 个区间，均无余票"
-                    Text(
-                        summary,
-                        color = if (withTickets > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
+                }
+                items(groups, key = { it.head.trainCode }) { g ->
+                    TrainCard(
+                        g, boardName = board?.name ?: "", destName = dest?.name ?: "",
+                        loading = loading, keyOf = vm::key, onLoadPrice = { vm.loadPrices(it) },
+                        stops = stopsByTrain[g.head.trainCode], loadingStops = g.head.trainCode in loadingStops,
+                        onExpand = { vm.loadStops(g.head) }
                     )
-                    displayTickets.forEach { ticket -> TicketCard(ticket) }
+                }
+                item {
+                    TextButton(onClick = { showLog = !showLog }) { Text(if (showLog) "收起查询过程" else "查看查询过程", color = Blue) }
+                    if (showLog) log.forEach { Text(it, fontSize = 12.sp, color = Grey, modifier = Modifier.padding(vertical = 1.dp)) }
                 }
             }
-
-            Spacer(Modifier.height(32.dp))
         }
     }
 
-    // ── 站名选择弹窗 ──────────────────────────────────────────────
-    if (showBoardPicker) {
-        StationPickerDialog(
-            query = boardInput,
-            onQueryChange = { vm.boardStationInput.value = it },
-            onSelected = {
-                vm.boardStationSelected.value = it
-                showBoardPicker = false
-            },
-            onDismiss = { showBoardPicker = false }
-        )
+    if (showFilter) {
+        ModalBottomSheet(onDismissRequest = { showFilter = false }, containerColor = Color.White) {
+            FilterSheet(all, filters, { filters = it }, shownCount = groups.size) { showFilter = false }
+        }
     }
-    if (showDestPicker) {
-        StationPickerDialog(
-            query = destInput,
-            onQueryChange = { vm.destStationInput.value = it },
-            onSelected = {
-                vm.destStationSelected.value = it
-                showDestPicker = false
-            },
-            onDismiss = { showDestPicker = false }
-        )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FilterSheet(
+    all: List<TrainTicket>, filters: Filters, onChange: (Filters) -> Unit, shownCount: Int, onDone: () -> Unit
+) {
+    fun <T> Set<T>.toggle(v: T) = if (v in this) this - v else this + v
+    val seatLabels = all.flatMap { t -> t.seats.filter { it.available }.map { it.label } }.distinct()
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+        FilterGroup("车次类型", listOf("高铁/城际", "动车", "其他"), filters.trainTypes) { onChange(filters.copy(trainTypes = filters.trainTypes.toggle(it))) }
+        if (seatLabels.isNotEmpty())
+            FilterGroup("有票的席别", seatLabels, filters.seats) { onChange(filters.copy(seats = filters.seats.toggle(it))) }
+        Text("票的类型", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(RideKind.DIRECT to "直达", RideKind.COVERS to "提前购票", RideKind.ENDS_EARLY to "买短乘长").forEach { (k, label) ->
+                OptionChip(label, k in filters.kinds) { onChange(filters.copy(kinds = filters.kinds.toggle(k))) }
+            }
+        }
+        FilterGroup("出发车站", all.map { it.fromName }.distinct(), filters.froms) { onChange(filters.copy(froms = filters.froms.toggle(it))) }
+        FilterGroup("到达车站", all.map { it.toName }.distinct(), filters.tos) { onChange(filters.copy(tos = filters.tos.toggle(it))) }
+        Text("出发时间", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TimeLabels.forEachIndexed { i, label ->
+                OptionChip(label, i in filters.times) { onChange(filters.copy(times = filters.times.toggle(i))) }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = { onChange(Filters()) }, modifier = Modifier.weight(1f).height(48.dp)) { Text("重置") }
+            Button(
+                onClick = onDone, modifier = Modifier.weight(2f).height(48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Blue)
+            ) { Text("确定（$shownCount 趟）") }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FilterGroup(title: String, options: List<String>, selected: Set<String>, onToggle: (String) -> Unit) {
+    Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { OptionChip(it, it in selected) { onToggle(it) } }
     }
 }
 
 @Composable
-fun TicketCard(ticket: TrainTicket) {
-    val context = LocalContext.current
-    val hasTickets = ticket.seats.isNotEmpty()
-    val cardColor = if (hasTickets) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
+private fun OptionChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected, onClick = onClick, label = { Text(label) },
+        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Blue.copy(alpha = 0.12f), selectedLabelColor = Blue)
+    )
+}
+
+// ─────────────────────────────────────────────────────────────
+// 车次卡片：一趟车一张，里面是 12306 样式的票段，按查询顺序排好；点车次头可展开经停站
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun TrainCard(
+    group: TrainGroup, boardName: String, destName: String,
+    loading: Set<String>, keyOf: (TrainTicket) -> String, onLoadPrice: (TrainTicket) -> Unit,
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit
+) {
+    var showSoldOut by remember { mutableStateOf(false) }
+    val head = group.head
+    val withSeats = group.shown.filter { it.hasSeats }
+    val soldOut = group.shown.filter { !it.hasSeats }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = cardColor)
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            // ── 车次 + 区间 + 时间 ─────────────────────────────────
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    ticket.trainNo,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    color = if (hasTickets) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        Column {
+            Row(
+                Modifier.fillMaxWidth().background(Blue.copy(alpha = 0.06f)).padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(head.trainNo, color = Blue, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "${ticket.fromStation} → ${ticket.toStation}",
-                    fontSize = 13.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    "${ticket.departTime}  ${ticket.arriveTime}",
-                    fontSize = 12.sp,
-                    color = Color.Gray
+                    "$boardName ${head.departTime} → $destName ${head.arriveTime}",
+                    color = Grey, fontSize = 12.sp, modifier = Modifier.weight(1f)
                 )
             }
-
-            // ── 余票状态 ──────────────────────────────────────────
-            if (hasTickets) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    ticket.seats.forEach { (type, count) ->
-                        val price = ticket.prices[type]
-                        val label = if (price != null) "$type $count · $price" else "$type $count"
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text(label, fontSize = 11.sp) },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = Color(0xFF4CAF50),
-                                labelColor = Color.White
-                            )
+            if (withSeats.isEmpty()) {
+                Text("该车次暂无可购票段", color = Grey, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+            }
+            withSeats.forEachIndexed { i, t ->
+                if (i > 0) HorizontalDivider(color = Line)
+                SegmentBlock(
+                    t, boardName, destName, loading = keyOf(t) in loading, onLoadPrice = { onLoadPrice(t) },
+                    stops = stops, loadingStops = loadingStops, onExpand = onExpand
+                )
+            }
+            if (soldOut.isNotEmpty()) {
+                HorizontalDivider(color = Line)
+                Text(
+                    if (showSoldOut) "收起 ${soldOut.size} 个无票的票段 ▴" else "另有 ${soldOut.size} 个票段无票 ▾",
+                    color = Blue, fontSize = 12.sp,
+                    modifier = Modifier.fillMaxWidth().clickable { showSoldOut = !showSoldOut }.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+                if (showSoldOut) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    soldOut.forEach {
+                        Text(
+                            "${it.fromName} ${it.departTime} → ${it.toName} ${it.arriveTime}   无票",
+                            color = Color(0xFF9AA5B3), fontSize = 12.sp
                         )
                     }
-                }
-                // 有票但价格里还有其他席别价格（那些席别已售完）
-                if (ticket.prices.isNotEmpty()) {
-                    val soldOutPrices = ticket.prices.filter { (k, _) -> k !in ticket.seats }
-                    if (soldOutPrices.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            soldOutPrices.forEach { (type, price) ->
-                                SuggestionChip(
-                                    onClick = {},
-                                    label = { Text("$type 无票 · $price", fontSize = 11.sp) },
-                                    colors = SuggestionChipDefaults.suggestionChipColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                // 无票，只显示价格供参考
-                if (ticket.prices.isNotEmpty()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ticket.prices.forEach { (type, price) ->
-                            SuggestionChip(
-                                onClick = {},
-                                label = { Text("$type 无票 · $price", fontSize = 11.sp) },
-                                colors = SuggestionChipDefaults.suggestionChipColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            )
-                        }
-                    }
-                } else {
-                    Text("无票", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-
-            // ── 购票按钮（有票才显示）─────────────────────────────
-            if (hasTickets) {
-                Button(
-                    onClick = { open12306(context) },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    modifier = Modifier.align(Alignment.End)
-                ) {
-                    Text("去购票", fontSize = 12.sp, color = Color.White)
                 }
             }
         }
     }
 }
 
-/** 优先打开 12306 APP，若未安装则打开网页 */
-private fun open12306(context: android.content.Context) {
-    val appPackage = "com.MobileTicket"
-    val intent = try {
-        context.packageManager.getLaunchIntentForPackage(appPackage)
-            ?: throw PackageManager.NameNotFoundException()
-    } catch (e: Exception) {
-        Intent(Intent.ACTION_VIEW, Uri.parse("https://kyfw.12306.cn/otn/leftTicket/init"))
+/** 经停站表（12306 样式）：这张票的起点和终点是蓝色实心点，区间之外的站变灰；你的上车站、终点站另加小标签。 */
+@Composable
+private fun StopsTable(stops: List<StopInfo>, fromName: String, toName: String, boardName: String, destName: String) {
+    val bi = stops.indexOfFirst { it.name == fromName }
+    val di = stops.indexOfFirst { it.name == toName }
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().background(Blue.copy(alpha = 0.08f)).padding(vertical = 6.dp)) {
+            Text("站名", color = Grey, fontSize = 12.sp, modifier = Modifier.weight(2.2f).padding(start = 40.dp))
+            Text("到时", color = Grey, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+            Text("发时", color = Grey, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+            Text("停留", color = Grey, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+        }
+        stops.forEachIndexed { i, st ->
+            val key = i == bi || i == di
+            val inRange = bi >= 0 && di >= 0 && i in bi..di
+            val color = when {
+                key -> Blue
+                inRange || bi < 0 -> Color(0xFF1F2937)
+                else -> Color(0xFFA0AAB8)
+            }
+            Row(
+                Modifier.fillMaxWidth().height(34.dp).drawBehind {
+                    val x = 20.dp.toPx()
+                    val cy = size.height / 2
+                    val lineColor = if (inRange) Blue else Color(0xFFD5DBE3)
+                    if (i > 0) drawLine(lineColor, Offset(x, 0f), Offset(x, cy), 2.dp.toPx())
+                    if (i < stops.lastIndex) drawLine(lineColor, Offset(x, cy), Offset(x, size.height), 2.dp.toPx())
+                    if (key) drawCircle(Blue, 5.dp.toPx(), Offset(x, cy), style = Fill)
+                    else drawCircle(lineColor, 4.dp.toPx(), Offset(x, cy), style = Stroke(1.5.dp.toPx()))
+                },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(Modifier.weight(2.2f).padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(st.name, color = color, fontSize = 14.sp, fontWeight = if (key) FontWeight.Bold else FontWeight.Normal)
+                    val role = when (st.name) { boardName -> "上车"; destName -> "终点"; else -> null }
+                    if (role != null) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            role, color = Green, fontSize = 10.sp, maxLines = 1, softWrap = false,
+                            modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(Green.copy(alpha = 0.12f)).padding(horizontal = 4.dp)
+                        )
+                    }
+                }
+                for (v in listOf(st.arriveTime, st.departTime, st.stayTime)) {
+                    Text(v.ifEmpty { "----" }, color = color, fontSize = 13.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
     }
+}
+
+private fun seatShort(label: String) = if (label == "无座") label else label.removeSuffix("座")
+
+/** 12306 样式的一张票（紧凑版）：左出发、中车次和历时、右到达、最右价格；下面一行席别；再下面一行说明和去购票。 */
+@Composable
+private fun SegmentBlock(
+    t: TrainTicket, boardName: String, destName: String, loading: Boolean, onLoadPrice: () -> Unit,
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit
+) {
+    val context = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    val lowest = t.seats.filter { it.available }
+        .mapNotNull { t.prices[it.label]?.removePrefix("¥")?.toDoubleOrNull() }.minOrNull()
+
+    Column(
+        Modifier.fillMaxWidth().clickable(enabled = t.prices.isEmpty()) { onLoadPrice() }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                Text(t.departTime, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(t.fromName, fontSize = 13.sp)
+            }
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(t.trainNo, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    durationText(t.duration) + if (expanded) " ▴" else " ▾", color = Grey, fontSize = 11.sp,
+                    modifier = Modifier.clickable { expanded = !expanded; if (expanded) onExpand() }.padding(vertical = 2.dp)
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(t.arriveTime, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(t.toName, fontSize = 13.sp)
+            }
+            Text(
+                when {
+                    lowest != null -> "¥${if (lowest % 1.0 == 0.0) lowest.toInt() else lowest}起"
+                    loading -> "票价查询中…"
+                    else -> "点击查看票价"
+                },
+                color = if (lowest != null) Orange else Grey,
+                fontSize = if (lowest != null) 16.sp else 11.sp,
+                fontWeight = if (lowest != null) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+
+        Row(Modifier.fillMaxWidth()) {
+            t.seats.forEach { seat ->
+                Text(
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(color = Grey)) { append(seatShort(seat.label) + " ") }
+                        withStyle(SpanStyle(
+                            color = if (seat.available) Green else Color(0xFFB0B8C4),
+                            fontWeight = FontWeight.Medium
+                        )) {
+                            append(when {
+                                !seat.available -> "无"
+                                seat.value == "有" -> "有票"
+                                else -> seat.value + "张"
+                            })
+                        }
+                    },
+                    fontSize = 12.sp, modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        if (expanded) {
+            when {
+                stops != null -> StopsTable(stops, t.fromName, t.toName, boardName, destName)
+                loadingStops -> Text("经停站加载中…", color = Grey, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp))
+                else -> Text("经停站加载失败，收起后重新展开可重试", color = Grey, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp))
+            }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (t.best || t.kind == RideKind.DIRECT) Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (t.best) {
+                        Text(
+                            "最优", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(Green).padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    if (t.kind == RideKind.DIRECT) Text("直达", color = Grey, fontSize = 12.sp)
+                }
+                if (t.earlierStops > 0)
+                    Text("提前${t.earlierStops}站买票，从${t.fromName}买，在${boardName}上车", color = Blue, fontSize = 12.sp)
+                if (t.extraStops > 0)
+                    Text("买到${t.toName}，多坐${t.extraStops}站要补票", color = Orange, fontSize = 12.sp)
+            }
+            Button(
+                onClick = { open12306(context) },
+                colors = ButtonDefaults.buttonColors(containerColor = Orange),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.height(26.dp)
+            ) { Text("去购票", fontSize = 12.sp) }
+        }
+    }
+}
+
+private fun durationText(d: String): String {
+    val p = d.split(":")
+    val h = p.getOrNull(0)?.toIntOrNull() ?: return d
+    val m = p.getOrNull(1)?.toIntOrNull() ?: 0
+    return if (h > 0) "${h}小时${m}分" else "${m}分"
+}
+
+private fun weekdayOf(date: String): String? = runCatching {
+    LocalDate.parse(date.trim()).dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
+}.getOrNull()
+
+/** 优先打开 12306 APP，没装就打开网页 */
+private fun open12306(context: android.content.Context) {
+    val intent = context.packageManager.getLaunchIntentForPackage("com.MobileTicket")
+        ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://kyfw.12306.cn/otn/leftTicket/init"))
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     context.startActivity(intent)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun StationPickerDialog(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onSelected: (Station) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val results = remember(query) { StationData.search(query) }
+// ─────────────────────────────────────────────────────────────
+// 选站页（12306「车站选择」样式）：搜索、常用车站、热门车站、按拼音 A–Z 排的国内站点，右侧字母索引
+// ─────────────────────────────────────────────────────────────
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("选择站点") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    placeholder = { Text("输入站名搜索") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                Spacer(Modifier.height(8.dp))
-                LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                    items(results) { station ->
-                        ListItem(
-                            headlineContent = { Text(station.name) },
-                            supportingContent = { Text(station.code, color = Color.Gray, fontSize = 12.sp) },
-                            modifier = Modifier.clickable { onSelected(station) }
-                        )
-                        Divider()
+private val HotStationNames = listOf("北京", "上海", "广州", "天津", "重庆", "成都", "长沙", "哈尔滨", "杭州")
+
+@Composable
+private fun StationPickerScreen(recent: List<Station>, onSelected: (Station) -> Unit, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    var query by remember { mutableStateOf("") }
+    val results = remember(query) { if (query.isBlank()) emptyList() else StationData.search(query, 60) }
+    val hot = remember { HotStationNames.mapNotNull { StationData.findByName(it) } }
+    val grouped = remember {
+        StationData.stations.groupBy { it.pinyin.firstOrNull()?.uppercaseChar() ?: '#' }.toSortedMap()
+    }
+
+    Column(Modifier.fillMaxSize().background(Color.White)) {
+        Row(
+            Modifier.fillMaxWidth().background(Blue).statusBarsPadding().padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("‹ 返回", color = Color.White, fontSize = 15.sp) }
+            Text(
+                "车站选择", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.width(72.dp))
+        }
+        TextField(
+            value = query, onValueChange = { query = it }, singleLine = true,
+            placeholder = { Text("请输入（如：北京市/北京站/beijing/bj）", fontSize = 14.sp, color = Color(0xFF9AA5B3)) },
+            shape = RoundedCornerShape(8.dp),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = Bg, unfocusedContainerColor = Bg,
+                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent
+            ),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)
+        )
+
+        if (query.isNotBlank()) {
+            if (results.isEmpty()) Text("没有找到「$query」", color = Grey, modifier = Modifier.padding(16.dp))
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(results, key = { it.code }) { st ->
+                    Column(Modifier.fillMaxWidth().clickable { onSelected(st) }.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text(st.name, fontSize = 16.sp)
+                        Text(st.code, color = Grey, fontSize = 12.sp)
                     }
+                    HorizontalDivider(color = Line)
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+        } else {
+            val listState = rememberLazyListState()
+            val scope = rememberCoroutineScope()
+            val headerCount = (if (recent.isNotEmpty()) 1 else 0) + 2
+            val letterIndex = remember(grouped, headerCount) {
+                var idx = headerCount
+                grouped.entries.associate { (letter, list) -> letter to idx.also { idx += 1 + list.size } }
+            }
+            val labels = remember(grouped) { listOf("常", "热") + grouped.keys.map { it.toString() } }
+            fun target(label: String): Int = when (label) {
+                "常" -> 0
+                "热" -> if (recent.isNotEmpty()) 1 else 0
+                else -> letterIndex[label.first()] ?: 0
+            }
+
+            Box(Modifier.fillMaxSize()) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(end = 28.dp)) {
+                    if (recent.isNotEmpty()) item { StationChipGroup("常用车站", recent, onSelected) }
+                    item { StationChipGroup("热门车站", hot, onSelected) }
+                    item {
+                        Column(Modifier.padding(start = 16.dp, top = 12.dp)) {
+                            Text("国内站点", color = Blue, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            Box(Modifier.width(36.dp).height(3.dp).background(Blue))
+                        }
+                        HorizontalDivider(color = Line)
+                    }
+                    grouped.forEach { (letter, list) ->
+                        item { Text(letter.toString(), color = Grey, fontSize = 14.sp, modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)) }
+                        items(list, key = { it.code }) { st ->
+                            Text(
+                                st.name, fontSize = 16.sp,
+                                modifier = Modifier.fillMaxWidth().clickable { onSelected(st) }.padding(horizontal = 16.dp, vertical = 13.dp)
+                            )
+                            HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 16.dp))
+                        }
+                    }
+                }
+                // 右侧字母索引：点或拖动跳转
+                Column(
+                    Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)
+                        .pointerInput(labels) {
+                            fun jump(y: Float) {
+                                val i = (y / size.height * labels.size).toInt().coerceIn(0, labels.lastIndex)
+                                scope.launch { listState.scrollToItem(target(labels[i])) }
+                            }
+                            detectTapGestures { jump(it.y) }
+                        }
+                        .pointerInput(labels) {
+                            fun jump(y: Float) {
+                                val i = (y / size.height * labels.size).toInt().coerceIn(0, labels.lastIndex)
+                                scope.launch { listState.scrollToItem(target(labels[i])) }
+                            }
+                            detectVerticalDragGestures { change, _ -> jump(change.position.y) }
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    labels.forEach { Text(it, color = Blue, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(horizontal = 6.dp)) }
+                }
+            }
         }
-    )
+    }
+}
+
+@Composable
+private fun StationChipGroup(title: String, stations: List<Station>, onSelected: (Station) -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(10.dp))
+        stations.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { st ->
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(Bg)
+                            .clickable { onSelected(st) }.padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center
+                    ) { Text(st.name, fontSize = 15.sp, maxLines = 1) }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
 }
