@@ -13,7 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-/** 「帮我填好」的执行体。要用前台服务：12306 盖住我们之后，普通后台进程会被系统冻结，脚本就停了。 */
+/** 「去12306」的执行体。要用前台服务：12306 盖住我们之后，普通后台进程会被系统冻结，脚本就停了。 */
 class FillService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

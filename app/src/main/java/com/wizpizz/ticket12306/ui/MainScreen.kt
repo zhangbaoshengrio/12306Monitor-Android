@@ -544,7 +544,7 @@ private fun StopsTable(stops: List<StopInfo>, fromName: String, toName: String, 
 
 private fun seatShort(label: String) = if (label == "无座") label else label.removeSuffix("座")
 
-/** 12306 样式的一张票（紧凑版）：左出发、中车次和历时、右到达、最右价格；下面一行席别；再下面一行说明和去购票。 */
+/** 12306 样式的一张票（紧凑版）：左出发、中车次和历时、右到达、最右价格；下面一行席别；再下面一行说明和两个购票按钮。 */
 @Composable
 private fun SegmentBlock(
     t: TrainTicket, boardName: String, destName: String, date: String, loading: Boolean, onLoadPrice: () -> Unit,
@@ -635,21 +635,21 @@ private fun SegmentBlock(
                 if (t.extraStops > 0)
                     Text("买到${t.toName}，多坐${t.extraStops}站要补票", color = Orange, fontSize = 12.sp)
             }
-            Button(
+            OutlinedButton(
                 onClick = {
                     copyPurchaseNote(context, purchaseNote(t, date, boardName))
                     onBuy(purchaseUrl(t, date))
                 },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(26.dp)
+            ) { Text("网页购票", fontSize = 12.sp) }
+            Spacer(Modifier.width(6.dp))
+            Button(
+                onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, date) },
                 colors = ButtonDefaults.buttonColors(containerColor = Orange),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier.height(26.dp)
-            ) { Text("去购票", fontSize = 12.sp) }
-            Spacer(Modifier.width(6.dp))
-            OutlinedButton(
-                onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, date) },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                modifier = Modifier.height(26.dp)
-            ) { Text("帮我填好", fontSize = 12.sp) }
+            ) { Text("去12306", fontSize = 12.sp) }
         }
     }
 }

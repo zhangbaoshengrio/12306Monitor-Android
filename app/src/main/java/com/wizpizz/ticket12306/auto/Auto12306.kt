@@ -9,7 +9,7 @@ import com.wizpizz.ticket12306.model.StationData
 import com.wizpizz.ticket12306.model.TrainTicket
 import java.time.LocalDate
 
-/** 「帮我填好」：打开 12306，用 root 把这张票的起终点和日期填进去，停在查询结果里这趟车的位置。 */
+/** 「去12306」：打开 12306，用 root 把这张票的出发站、到达站填进首页，查询由用户自己点。 */
 object Auto12306 {
     @Volatile private var busy = false
 

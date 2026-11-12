@@ -33,8 +33,8 @@ object UiDump {
 }
 
 /**
- * 用 root 读屏、按文字点击，把 12306 App 带到「某一天、某两站」的查询结果，并滚到指定车次。
- * 只做到查询结果列表为止：不点预订、不碰登录和支付，由用户自己接着操作。
+ * 用 root 读屏、按文字点击，把 12306 App 首页的出发站、到达站填好。
+ * 只填到这里：不点查询、不点预订、不碰登录和支付，由用户自己接着操作。
  *
  * @param shell 以 root 执行一条命令并返回输出
  */
@@ -146,8 +146,9 @@ class Fill12306(
     }
 
     /**
-     * @param monthDay 形如「11月14日」，用来在结果页的日期条里选日期（日期条只有 7 天）
-     * @param trainNo  车次，如 G3591；找到后停在那一行
+     * 只把出发站、到达站填好，停在 12306 首页，「查询车票」由用户自己点。
+     * @param monthDay 形如「11月14日」，只用来提醒：首页的日期不是它时，请用户自己改
+     * @param trainNo  车次，只用在提示里
      */
     suspend fun run(from: Station, to: Station, monthDay: String, trainNo: String): String {
         onStatus("正在打开 12306…")
@@ -155,42 +156,9 @@ class Fill12306(
         home = setStation(true, from, home)
         home = setStation(false, to, home)
 
-        onStatus("查询 ${from.name}→${to.name}…")
-        tap(home.first { it.text == "查询车票" })
-        val hasRows = { list: List<UiNode> -> list.any { it.cls == "Button" && "次列车" in it.label && "出发" in it.label } }
-        val results = waitForResults("查询结果", 12000) { list -> list.any { it.cls == "RadioButton" && "月" in it.text } && hasRows(list) }
-
-        val day = results.firstOrNull { it.cls == "RadioButton" && it.text.startsWith(monthDay) }
-            ?: return "已查到 ${from.name}→${to.name}，但 $monthDay 超出结果页的 7 天日期条，请在 12306 里手动选日期"
-        tap(day)
-        pause(3000)
-        waitForResults("车次列表", 12000, hasRows)
-
-        // 行的描述形如「G 3 5 9 1次列车9点29分从武汉出发…」，有的前面还带「复兴号智能动车组」之类
-        val spaced = trainNo.toList().joinToString(" ") + "次列车"
-        fun trainRow(list: List<UiNode>) =
-            list.firstOrNull { spaced in it.label && "出发" in it.label && it.y1 > 480 && it.y2 < 2450 }
-
-        // 界面树里也有屏幕下方还没滚出来的行，所以要求这一行在可见区域内；先一路往下找；到底了还没有，再一路往上找
-        suspend fun scan(down: Boolean): Boolean {
-            var previous = emptySet<String>()
-            var screen = dump()
-            repeat(20) {
-                if (trainRow(screen) != null) return true
-                val seen = screen.map { it.label }.toSet()
-                if (seen == previous) return false
-                previous = seen
-                guard()
-                shell(if (down) "input swipe 640 2200 640 1200 400" else "input swipe 640 1200 640 2200 400")
-                pause(900)
-                screen = dump()
-            }
-            return false
-        }
-        if (!scan(true) && !scan(false)) {
-            return "已查到 ${from.name}→${to.name} $monthDay，但结果里没找到 $trainNo，可能这天没有这趟车"
-        }
-        return "已定位到 $trainNo（${from.name}→${to.name} $monthDay），请在 12306 里自己点预订"
+        val dateOk = home.any { it.desc.startsWith("出发日期") && monthDay in it.desc }
+        return "已填好 ${from.name}→${to.name}（$trainNo），" +
+            if (dateOk) "点「查询车票」即可" else "请把日期改成 $monthDay，再点「查询车票」"
     }
 
     companion object {

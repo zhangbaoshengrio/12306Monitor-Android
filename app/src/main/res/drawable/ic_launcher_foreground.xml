@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 一张车票，票面上是「买短乘长」：实线是买的那一段，虚线是多坐的那一段 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
@@ -6,5 +7,26 @@
     android:viewportHeight="108">
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M54,20C38,20 22,22 22,34v38C22,79.7 27.3,85 35.5,85L28,92v2h8l8,-8h20l8,8h8v-2L72.5,85C80.7,85 86,79.7 86,72V34C86,22 70.3,20 54,20zM35.5,78C32.5,78 30,75.5 30,72.5S32.5,67 35.5,67 41,69.5 41,72.5 38.5,78 35.5,78zM50,55H30V34h20v21zM58,55V34h20v21H58zM72.5,78C69.5,78 67,75.5 67,72.5S69.5,67 72.5,67 78,69.5 78,72.5 75.5,78 72.5,78z"/>
+        android:pathData="M30,36H58a4,4 0,0 0,8 0H78a4,4 0,0 1,4 4V68a4,4 0,0 1,-4 4H66a4,4 0,0 0,-8 0H30a4,4 0,0 1,-4 -4V40a4,4 0,0 1,4 -4Z" />
+    <path
+        android:strokeColor="#FF1B6AD0"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M37,54H52" />
+    <path
+        android:strokeColor="#FFF97316"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M59.5,54h1M65.5,54h1" />
+    <path
+        android:fillColor="#FF1B6AD0"
+        android:pathData="M32.5,54a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0Z" />
+    <path
+        android:fillColor="#FF1B6AD0"
+        android:pathData="M47.5,54a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFF97316"
+        android:strokeWidth="3"
+        android:pathData="M69.5,54a3.5,3.5 0,1 0,7 0a3.5,3.5 0,1 0,-7 0Z" />
 </vector>

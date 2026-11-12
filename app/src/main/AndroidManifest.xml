@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Android 11+：不声明的话，查不到手机上装了 12306，「去购票」会退回打开网页 -->
+    <!-- Android 11+：不声明的话，查不到手机上装了 12306，「去12306」会提示没装 12306 -->
     <queries>
         <package android:name="com.MobileTicket" />
     </queries>
