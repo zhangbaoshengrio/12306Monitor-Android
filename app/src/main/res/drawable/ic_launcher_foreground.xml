@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 一辆高铁的侧面：白色车身、橙色腰线，车尾伸出图标右边 -->
+<!-- 一辆高铁的侧面：白色车身、橙色腰线，车头朝右，车尾伸出图标左边 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <group android:pivotX="54" android:scaleX="-1">
     <path
         android:fillColor="#FFFFFFFF"
         android:pathData="M24,60C24,50 36,43 52,43H108V65H29C26,65 24,63 24,60Z" />
@@ -24,4 +25,5 @@
         android:strokeWidth="2"
         android:strokeLineCap="round"
         android:pathData="M22,70H108M30,36H46M26,30H38" />
+    </group>
 </vector>
