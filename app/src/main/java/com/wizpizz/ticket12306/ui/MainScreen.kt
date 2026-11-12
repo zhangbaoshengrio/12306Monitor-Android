@@ -9,6 +9,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.viewinterop.AndroidView
+import android.annotation.SuppressLint
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -58,9 +65,11 @@ private val Line = Color(0xFFE1E6ED)
 @Composable
 fun MainScreen(vm: MainViewModel = viewModel()) {
     val showResults by vm.showResults.collectAsState()
+    var webUrl by remember { mutableStateOf<String?>(null) }
     BackHandler(enabled = showResults) { vm.backToSearch() }
     Box(Modifier.fillMaxSize().background(Bg)) {
-        if (showResults) ResultsScreen(vm) else SearchScreen(vm)
+        if (showResults) ResultsScreen(vm, onBuy = { webUrl = it }) else SearchScreen(vm)
+        webUrl?.let { WebScreen(it, onClose = { webUrl = null }) }
     }
 }
 
@@ -238,7 +247,7 @@ private fun minutes(d: String): Int {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ResultsScreen(vm: MainViewModel) {
+private fun ResultsScreen(vm: MainViewModel, onBuy: (String) -> Unit) {
     val board by vm.boardStationSelected.collectAsState()
     val dest by vm.destStationSelected.collectAsState()
     val date by vm.dateInput.collectAsState()
@@ -345,10 +354,10 @@ private fun ResultsScreen(vm: MainViewModel) {
                 }
                 items(groups, key = { it.head.trainCode }) { g ->
                     TrainCard(
-                        g, boardName = board?.name ?: "", destName = dest?.name ?: "",
+                        g, boardName = board?.name ?: "", destName = dest?.name ?: "", date = date.trim(),
                         loading = loading, keyOf = vm::key, onLoadPrice = { vm.loadPrices(it) },
                         stops = stopsByTrain[g.head.trainCode], loadingStops = g.head.trainCode in loadingStops,
-                        onExpand = { vm.loadStops(g.head) }
+                        onExpand = { vm.loadStops(g.head) }, onBuy = onBuy
                     )
                 }
                 item {
@@ -425,9 +434,9 @@ private fun OptionChip(label: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun TrainCard(
-    group: TrainGroup, boardName: String, destName: String,
+    group: TrainGroup, boardName: String, destName: String, date: String,
     loading: Set<String>, keyOf: (TrainTicket) -> String, onLoadPrice: (TrainTicket) -> Unit,
-    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (String) -> Unit
 ) {
     var showSoldOut by remember { mutableStateOf(false) }
     val head = group.head
@@ -457,8 +466,8 @@ private fun TrainCard(
             withSeats.forEachIndexed { i, t ->
                 if (i > 0) HorizontalDivider(color = Line)
                 SegmentBlock(
-                    t, boardName, destName, loading = keyOf(t) in loading, onLoadPrice = { onLoadPrice(t) },
-                    stops = stops, loadingStops = loadingStops, onExpand = onExpand
+                    t, boardName, destName, date, loading = keyOf(t) in loading, onLoadPrice = { onLoadPrice(t) },
+                    stops = stops, loadingStops = loadingStops, onExpand = onExpand, onBuy = onBuy
                 )
             }
             if (soldOut.isNotEmpty()) {
@@ -538,8 +547,8 @@ private fun seatShort(label: String) = if (label == "无座") label else label.r
 /** 12306 样式的一张票（紧凑版）：左出发、中车次和历时、右到达、最右价格；下面一行席别；再下面一行说明和去购票。 */
 @Composable
 private fun SegmentBlock(
-    t: TrainTicket, boardName: String, destName: String, loading: Boolean, onLoadPrice: () -> Unit,
-    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit
+    t: TrainTicket, boardName: String, destName: String, date: String, loading: Boolean, onLoadPrice: () -> Unit,
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (String) -> Unit
 ) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
@@ -627,11 +636,20 @@ private fun SegmentBlock(
                     Text("买到${t.toName}，多坐${t.extraStops}站要补票", color = Orange, fontSize = 12.sp)
             }
             Button(
-                onClick = { open12306(context) },
+                onClick = {
+                    copyPurchaseNote(context, purchaseNote(t, date, boardName))
+                    onBuy(purchaseUrl(t, date))
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = Orange),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier.height(26.dp)
             ) { Text("去购票", fontSize = 12.sp) }
+            Spacer(Modifier.width(6.dp))
+            OutlinedButton(
+                onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, date) },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(26.dp)
+            ) { Text("帮我填好", fontSize = 12.sp) }
         }
     }
 }
@@ -647,12 +665,97 @@ private fun weekdayOf(date: String): String? = runCatching {
     LocalDate.parse(date.trim()).dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
 }.getOrNull()
 
-/** 优先打开 12306 APP，没装就打开网页 */
-private fun open12306(context: android.content.Context) {
+/** 要在 12306 里搜的内容：日期、车次、这张票的起终点；买短乘长的票另注明在哪站上车。 */
+private fun purchaseNote(t: TrainTicket, date: String, boardName: String): String =
+    "${date.drop(5)} ${t.trainNo} ${t.fromName}→${t.toName}" +
+        if (t.fromName != boardName) "（在${boardName}上车）" else ""
+
+/** 12306 网页版的余票查询页，出发站、到达站、日期已经填好（用这张票自己的起终点）。 */
+private fun purchaseUrl(t: TrainTicket, date: String): String {
+    fun part(name: String): String {
+        val code = StationData.findByName(name)?.code.orEmpty()
+        return java.net.URLEncoder.encode(name, "UTF-8") + "," + code
+    }
+    return "https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=${part(t.fromName)}&ts=${part(t.toName)}&date=$date&flag=N,N,Y"
+}
+
+/** 把票的信息复制到剪贴板，方便在 12306 里对照。 */
+private fun copyPurchaseNote(context: android.content.Context, note: String) {
+    runCatching {
+        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("车票", note))
+        android.widget.Toast.makeText(context, "已复制：$note", android.widget.Toast.LENGTH_LONG).show()
+    }
+}
+
+/** 打开 12306 APP（没装就打开网页）。它没有能直接打开某张票的链接。 */
+private fun open12306App(context: android.content.Context) {
     val intent = context.packageManager.getLaunchIntentForPackage("com.MobileTicket")
         ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://kyfw.12306.cn/otn/leftTicket/init"))
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     context.startActivity(intent)
+}
+
+// ─────────────────────────────────────────────────────────────
+// App 内的 12306 网页（官方网站，你自己在上面登录和购票；我们看不到你的密码）
+// ─────────────────────────────────────────────────────────────
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun WebScreen(url: String, onClose: () -> Unit) {
+    val context = LocalContext.current
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var progress by remember { mutableStateOf(0) }
+    BackHandler { val w = webView; if (w != null && w.canGoBack()) w.goBack() else onClose() }
+
+    Column(Modifier.fillMaxSize().background(Color.White)) {
+        Row(
+            Modifier.fillMaxWidth().background(Blue).statusBarsPadding().padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onClose) { Text("‹ 返回", color = Color.White, fontSize = 15.sp) }
+            Text(
+                "12306 购票", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center
+            )
+            TextButton(onClick = { open12306App(context) }) { Text("用App", color = Color.White, fontSize = 14.sp) }
+        }
+        if (progress in 1..99) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Orange)
+        AndroidView(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    settings.javaScriptEnabled = true          // 12306 网页需要
+                    settings.domStorageEnabled = true
+                    settings.useWideViewPort = true            // 按电脑版页面宽度排版，再缩放到屏幕宽度
+                    settings.loadWithOverviewMode = true
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true        // 双指缩放
+                    settings.displayZoomControls = false
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                            val u = request.url
+                            if (u.scheme == "https") return false   // 网页内的跳转（包括付款页）照常加载
+                            // 其他协议（比如拉起支付宝）交给系统处理；处理不了就忽略
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }
+                            return true
+                        }
+                    }
+                    webChromeClient = object : WebChromeClient() {
+                        override fun onProgressChanged(view: WebView, newProgress: Int) { progress = newProgress }
+                    }
+                    webView = this
+                    loadUrl(url)
+                }
+            },
+            onRelease = { it.destroy() }
+        )
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
