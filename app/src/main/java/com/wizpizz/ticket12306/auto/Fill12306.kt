@@ -33,8 +33,8 @@ object UiDump {
 }
 
 /**
- * 用 root 读屏、按文字点击，把 12306 App 首页的出发站、到达站填好。
- * 只填到这里：不点查询、不点预订、不碰登录和支付，由用户自己接着操作。
+ * 用 root 读屏、按文字点击，在 12306 App 里把一张票一路点到「确认订单」页。
+ * 到这一页就停：不选乘车人、不点提交订单、不碰登录和支付，由用户自己接着操作。
  *
  * @param shell 以 root 执行一条命令并返回输出
  */
@@ -73,9 +73,11 @@ class Fill12306(
     private suspend fun waitFor(what: String, timeoutMs: Long = 9000, cond: (List<UiNode>) -> Boolean): List<UiNode> {
         val start = System.currentTimeMillis()
         while (true) {
-            val nodes = dump()
-            if (cond(nodes)) return nodes
+            // 页面正在加载时 uiautomator 可能读不出来，这不算失败，接着等
+            val nodes = try { dump() } catch (e: Failure) { emptyList() }
+            if (nodes.isNotEmpty() && cond(nodes)) return nodes
             if (System.currentTimeMillis() - start >= timeoutMs) {
+                if (nodes.isEmpty()) throw Failure("读不到 12306 的界面（uiautomator 没有响应）")
                 val seen = nodes.filter { it.text.isNotBlank() || it.desc.isNotBlank() }
                     .joinToString(" | ") { "${it.cls}:${it.label.take(14)}" }
                 throw Failure("等不到「$what」。当时屏幕：${seen.take(500)}")
@@ -90,7 +92,7 @@ class Fill12306(
             try {
                 return waitFor(what, timeoutMs, cond)
             } catch (e: Failure) {
-                val retry = dump().firstOrNull { it.label == "点击重试" }
+                val retry = try { dump() } catch (e2: Failure) { emptyList() }.firstOrNull { it.label == "点击重试" }
                 if (retry == null || attempt == 2) throw e
                 onStatus("12306 没加载出来，重试…")
                 tap(retry)
@@ -145,24 +147,142 @@ class Fill12306(
         return waitFor("回到 12306 首页") { isHome(it) }
     }
 
+    /** 车次在 12306 界面里的写法：「G 1 5 4 5次列车」。 */
+    private fun spaced(trainNo: String) = trainNo.toList().joinToString(" ") + "次列车"
+
+    /** 界面树里也有屏幕下方还没滚出来的行，所以一屏一屏往下（或往上）滚着找，滚不动了就是没有。 */
+    private suspend fun scan(down: Boolean, find: (List<UiNode>) -> UiNode?): UiNode? {
+        var previous = emptySet<String>()
+        var screen = dump()
+        repeat(20) {
+            find(screen)?.let { return it }
+            val seen = screen.map { it.label }.toSet()
+            if (seen == previous) return null
+            previous = seen
+            guard()
+            shell(if (down) "input swipe 640 2200 640 1200 400" else "input swipe 640 1200 640 2200 400")
+            pause(900)
+            screen = dump()
+        }
+        return null
+    }
+
+    /** 结果页选日期：日期条里有就直接点，没有（日期条只有 7 天）就进「日历」点。 */
+    private suspend fun pickDate(results: List<UiNode>, monthDay: String) {
+        fun inBar(list: List<UiNode>) =
+            list.firstOrNull { it.cls == "RadioButton" && it.text.startsWith("$monthDay ") && it.x2 - it.x1 > 50 }
+        val day = inBar(results)
+        if (day != null) {
+            tap(day)
+        } else {
+            tap(results.first { it.text == "日历" })
+            val calendar = waitFor("日历") { list -> list.any { it.text == "选择日期" } }
+            val cell = calendar.firstOrNull { it.text.startsWith("$monthDay,") && it.y2 < 2700 }
+                ?: throw Failure("12306 的日历里没有 $monthDay")
+            if ("暂未开售" in cell.text) throw Failure("$monthDay 的票 12306 还没开售")
+            tap(cell)
+            waitFor("回到查询结果") { inBar(it) != null }
+        }
+        pause(2500)
+    }
+
+    /** 等「确认订单」页；等不到多半是 12306 要先登录，或者弹了别的提示，交给用户自己处理。 */
+    private suspend fun waitForOrderPage() {
+        try {
+            waitFor("确认订单", 12000) { list -> list.any { it.text == "确认订单" } }
+        } catch (e: Failure) {
+            throw Failure("没有进入「确认订单」页（可能要先登录 12306，或 12306 弹了提示），请自己接着操作")
+        }
+    }
+
+    /** 直达：在车次列表里找到这趟车，点开，再点这个席别的「预订」。 */
+    private suspend fun bookDirect(trainNo: String, seat: String): String {
+        fun isRow(n: UiNode) = n.cls == "Button" && "次列车" in n.label && "出发," in n.label
+        waitForResults("车次列表", 12000) { list -> list.any(::isRow) }
+        val name = spaced(trainNo)
+        // 行的文字形如「G 1 5 4 5次列车11点42分从武汉出发,15点38分到达…」，有的前面还带「复兴号智能动车组」；顶上吸顶的筛选栏会盖住 y<720 的部分
+        fun trainRow(list: List<UiNode>) = list.firstOrNull { isRow(it) && name in it.label && it.y1 > 720 && it.y2 < 2450 }
+        var row = scan(true, ::trainRow) ?: scan(false, ::trainRow)
+            ?: throw Failure("12306 的结果里没找到 $trainNo，可能这天没有这趟车")
+        if (row.cy > 1700) {
+            // 席别是在这一行下面展开的，先把这一行挪到屏幕上半部
+            guard()
+            shell("input swipe 640 1800 640 1100 400")
+            pause(900)
+            row = trainRow(dump()) ?: throw Failure("滚动后找不到 $trainNo 了，请自己点开它")
+        }
+        tap(row)
+        val panel = waitFor("席别和预订按钮") { list -> list.any { it.cls == "Button" && (it.text == "预订" || it.text == "候补") } }
+        val top = (trainRow(panel) ?: row).y2
+        val bottom = panel.filter { isRow(it) && it.y1 > top }.minOfOrNull { it.y1 } ?: Int.MAX_VALUE
+        val short = seatName(seat)
+        // 展开后每个席别一行：左边席别名，中间价格和余票，右边「预订」或「候补」
+        val button = panel.firstOrNull { b ->
+            b.cls == "Button" && (b.text == "预订" || b.text == "候补") && b.y1 > top && b.y2 < bottom &&
+                panel.any { it.cls == "TextView" && it.x1 < 300 && kotlin.math.abs(it.cy - b.cy) < 70 && (it.text == short || it.text == seat) }
+        } ?: throw Failure("12306 里 $trainNo 没有「$short」这个席别，请自己点预订")
+        val soldOut = button.text != "预订" ||
+            panel.any { it.cls == "TextView" && kotlin.math.abs(it.cy - button.cy) < 70 && (it.text == "无" || it.text == "售罄") }
+        if (soldOut) throw Failure("12306 显示 $trainNo 的$short 已经没票了，请自己换个席别")
+        if (button.y2 > 2500) throw Failure("「$short」的预订按钮在屏幕外，请自己点")
+        tap(button)
+        waitForOrderPage()
+        return "已到「确认订单」页（$trainNo $short），请自己选乘车人、提交订单"
+    }
+
+    /** 换座：在「中转」里找这趟车在 via 站「车内换座」的方案，点开，两张票在同一个订单里。 */
+    private suspend fun bookSwap(trainNo: String, via: String): String {
+        tap(dump().firstOrNull { it.text == "中转" && it.cls == "View" } ?: throw Failure("12306 的结果页里找不到「中转」"))
+        try {
+            waitForResults("中转方案", 15000) { list -> list.any { "经停详情" in it.label && "全程" in it.label } }
+        } catch (e: Failure) {
+            throw Failure("12306 的「中转」里没有列出方案，两张票请分开买")
+        }
+        // 方案的文字形如「11:42 武汉 14:53到达 全程3小时56分 14:58出发 永州 G 1 5 4 5次列车经停详情 车内换座 G 1 5 4 5次列车经停详情 15:38 全州南」
+        val name = spaced(trainNo)
+        fun plan(list: List<UiNode>) = list.firstOrNull {
+            "${name}经停详情 车内换座 ${name}经停详情" in it.label && "出发 $via " in it.label && it.cy in 720..2480
+        }
+        val row = scan(true, ::plan)
+            ?: throw Failure("12306 的「中转」里没有 $trainNo 在${via}车内换座的方案，两张票请分开买")
+        tap(row)
+        val next = waitFor("换座提示") { list -> list.any { it.text == "同意" || it.text == "确认订单" } }
+        // 12306 会先弹「本方案为车内换座，需要在某站更换座位」，只有是这句话才点同意
+        next.firstOrNull { it.text == "同意" }?.let { agree ->
+            if (next.none { "车内换座" in it.text }) throw Failure("12306 弹了一个提示，请自己看一下再继续")
+            tap(agree)
+        }
+        waitForOrderPage()
+        return "已到「确认订单」页（$trainNo，在${via}换座，两张票一起），请自己核对席别、选乘车人、提交订单"
+    }
+
     /**
-     * 只把出发站、到达站填好，停在 12306 首页，「查询车票」由用户自己点。
-     * @param monthDay 形如「11月14日」，只用来提醒：首页的日期不是它时，请用户自己改
-     * @param trainNo  车次，只用在提示里
+     * 填好出发站、到达站，查询，选日期，找到这张票，一直走到「确认订单」页就停。
+     * @param monthDay 形如「11月14日」
+     * @param seat     席别，如「二等座」；换座的一组票用 12306 默认选中的席别
+     * @param via      换座站；不为空时走「中转」里的车内换座方案，from/to 是整段行程的起点和终点
      */
-    suspend fun run(from: Station, to: Station, monthDay: String, trainNo: String): String {
+    suspend fun run(from: Station, to: Station, monthDay: String, trainNo: String, seat: String, via: String = ""): String {
         onStatus("正在打开 12306…")
         var home = toHome()
         home = setStation(true, from, home)
         home = setStation(false, to, home)
 
-        val dateOk = home.any { it.desc.startsWith("出发日期") && monthDay in it.desc }
-        return "已填好 ${from.name}→${to.name}（$trainNo），" +
-            if (dateOk) "点「查询车票」即可" else "请把日期改成 $monthDay，再点「查询车票」"
+        onStatus("查询 ${from.name}→${to.name}…")
+        tap(home.first { it.text == "查询车票" })
+        val results = waitForResults("查询结果", 12000) { list ->
+            list.any { it.cls == "RadioButton" && "月" in it.text } && list.any { it.text == "日历" }
+        }
+        pickDate(results, monthDay)
+        onStatus("正在找 $trainNo…")
+        return if (via.isEmpty()) bookDirect(trainNo, seat) else bookSwap(trainNo, via)
     }
 
     companion object {
         const val APP = "com.MobileTicket"
+
+        /** 席别在 12306 界面里的叫法：二等座→二等，硬座、软座、无座不变。 */
+        fun seatName(label: String) = if (label in setOf("无座", "硬座", "软座")) label else label.removeSuffix("座")
         private const val DUMP_FILE = "/data/local/tmp/t12306.xml"
     }
 }

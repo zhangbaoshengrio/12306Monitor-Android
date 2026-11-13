@@ -35,7 +35,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="在 12306 App 里自动填写车站和日期" />
+                android:value="在 12306 App 里自动查询并打开确认订单页" />
         </service>
 
     </application>

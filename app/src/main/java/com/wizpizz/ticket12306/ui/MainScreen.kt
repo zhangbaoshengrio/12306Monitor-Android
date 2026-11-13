@@ -604,6 +604,13 @@ private fun TrainCard(
                         modifier = Modifier.fillMaxWidth().background(Blue.copy(alpha = 0.06f)).padding(horizontal = 12.dp, vertical = 4.dp)
                     )
                     block(second, inPair = true)
+                    val context = LocalContext.current
+                    Button(
+                        onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, first, first.date.ifEmpty { date }, second = second) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Orange),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp).height(32.dp)
+                    ) { Text("去12306 · 两张一起下单", fontSize = 13.sp) }
                 }
                 if (withSeats.isNotEmpty()) HorizontalDivider(color = Line)
             }
@@ -697,12 +704,13 @@ private fun SegmentBlock(
 ) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
+    var seatsOpen by remember { mutableStateOf(false) }
     val rideDate = t.date.ifEmpty { date }   // 过夜车的换座票是第二天的票
     val lowest = t.seats.filter { it.available }
         .mapNotNull { t.prices[it.label]?.removePrefix("¥")?.toDoubleOrNull() }.minOrNull()
 
     Column(
-        Modifier.fillMaxWidth().clickable(enabled = t.prices.isEmpty()) { onLoadPrice() }
+        Modifier.fillMaxWidth().clickable { seatsOpen = !seatsOpen; if (t.prices.isEmpty()) onLoadPrice() }
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -754,6 +762,40 @@ private fun SegmentBlock(
                     fontSize = 12.sp, modifier = Modifier.weight(1f)
                 )
             }
+            Text(if (seatsOpen) "▴" else "▾", color = Grey, fontSize = 12.sp)
+        }
+
+        // 点一下这张票，像 12306 那样展开：每个席别一行，价格、余票、预订
+        if (seatsOpen) Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Color(0xFFF5F7FA)).padding(horizontal = 10.dp)
+        ) {
+            t.seats.forEachIndexed { i, seat ->
+                if (i > 0) HorizontalDivider(color = Line)
+                Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(seatShort(seat.label), fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text(
+                        t.prices[seat.label] ?: if (loading) "…" else "—", color = Orange, fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium, modifier = Modifier.weight(1.2f)
+                    )
+                    Text(
+                        when {
+                            !seat.available -> "无"
+                            seat.value == "有" -> "有票"
+                            else -> seat.value + "张"
+                        },
+                        color = if (seat.available) Green else Color(0xFFB0B8C4), fontSize = 13.sp, modifier = Modifier.weight(1f)
+                    )
+                    // 换座的一组票两张要一起下单，按钮在这一组的最下面
+                    if (!inPair) Button(
+                        onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, rideDate, seat.label) },
+                        enabled = seat.available,
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue),
+                        shape = RoundedCornerShape(4.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) { Text("预订", fontSize = 12.sp) }
+                }
+            }
         }
 
         if (expanded) {
@@ -803,13 +845,15 @@ private fun SegmentBlock(
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier.height(26.dp)
             ) { Text("网页购票", fontSize = 12.sp) }
-            Spacer(Modifier.width(6.dp))
-            Button(
-                onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, rideDate) },
-                colors = ButtonDefaults.buttonColors(containerColor = Orange),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                modifier = Modifier.height(26.dp)
-            ) { Text("去12306", fontSize = 12.sp) }
+            if (!inPair) {
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, rideDate) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Orange),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp)
+                ) { Text("去12306", fontSize = 12.sp) }
+            }
         }
     }
 }

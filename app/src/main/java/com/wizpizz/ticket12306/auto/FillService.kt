@@ -24,7 +24,7 @@ class FillService : Service() {
         nm.createNotificationChannel(NotificationChannel("fill", "自动填写 12306", NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, "fill")
             .setSmallIcon(android.R.drawable.ic_menu_search)
-            .setContentTitle("正在帮你填写 12306")
+            .setContentTitle("正在帮你打开 12306 的确认订单页")
             .setOngoing(true)
             .build()
         startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -35,7 +35,8 @@ class FillService : Service() {
                 Auto12306.run(
                     applicationContext,
                     i.getStringExtra("from").orEmpty(), i.getStringExtra("to").orEmpty(),
-                    i.getStringExtra("date").orEmpty(), i.getStringExtra("train").orEmpty()
+                    i.getStringExtra("date").orEmpty(), i.getStringExtra("train").orEmpty(),
+                    i.getStringExtra("seat").orEmpty(), i.getStringExtra("via").orEmpty()
                 )
             } finally {
                 stopSelf(startId)
