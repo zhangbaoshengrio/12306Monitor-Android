@@ -87,6 +87,7 @@ private fun SearchScreen(vm: MainViewModel) {
     val searchAll by vm.searchAll.collectAsState()
     val recent by vm.recentStations.collectAsState()
     var picking by remember { mutableStateOf<Boolean?>(null) }   // true = 上车站, false = 终点站
+    var pickingDate by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Column(
@@ -125,15 +126,21 @@ private fun SearchScreen(vm: MainViewModel) {
                 }
                 HorizontalDivider(color = Line)
                 Spacer(Modifier.height(12.dp))
-                Text("出发日期", color = Grey, fontSize = 12.sp)
-                OutlinedTextField(
-                    value = date,
-                    onValueChange = { vm.dateInput.value = it },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    supportingText = { Text(weekdayOf(date) ?: "格式：2026-11-13", fontSize = 12.sp) }
-                )
+                Column(Modifier.fillMaxWidth().clickable { pickingDate = true }.padding(bottom = 10.dp)) {
+                    Text("出发日期", color = Grey, fontSize = 12.sp)
+                    Spacer(Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        val d = runCatching { LocalDate.parse(date.trim()) }.getOrNull()
+                        Text(
+                            if (d != null) "${d.monthValue}月${d.dayOfMonth}日" else date,
+                            fontSize = 24.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(weekdayOf(date).orEmpty(), color = Grey, fontSize = 14.sp, modifier = Modifier.padding(bottom = 3.dp))
+                        Spacer(Modifier.weight(1f))
+                        Text("›", color = Color(0xFFA0AAB8), fontSize = 22.sp)
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("今天" to 0L, "明天" to 1L, "后天" to 2L).forEach { (label, off) ->
                         val selected = date.trim() == LocalDate.now().plusDays(off).toString()
@@ -189,6 +196,115 @@ private fun SearchScreen(vm: MainViewModel) {
             },
             onBack = { picking = null }
         )
+    }
+    if (pickingDate) {
+        DatePickerScreen(
+            selected = runCatching { LocalDate.parse(date.trim()) }.getOrNull(),
+            onSelected = { vm.dateInput.value = it.toString(); pickingDate = false },
+            onBack = { pickingDate = false }
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 选择日期（12306 样式的日历）
+// ─────────────────────────────────────────────────────────────
+
+/** 12306 的预售期：今天起 15 天（含今天）。之后的日期还没开售，日历里变灰、不能选。 */
+private const val PRESALE_DAYS = 15L
+
+private val LunarDays = listOf(
+    "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+    "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"
+)
+
+/** 农历几号（初一…三十）。 */
+private fun lunarDay(d: LocalDate): String {
+    val tz = android.icu.util.TimeZone.getTimeZone("Asia/Shanghai")
+    val c = android.icu.util.ChineseCalendar(tz)
+    c.timeInMillis = d.atTime(12, 0).atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()
+    return LunarDays.getOrElse(c.get(android.icu.util.Calendar.DAY_OF_MONTH) - 1) { "" }
+}
+
+@Composable
+private fun DatePickerScreen(selected: LocalDate?, onSelected: (LocalDate) -> Unit, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    val today = remember { LocalDate.now() }
+    val last = remember(today) { today.plusDays(PRESALE_DAYS - 1) }
+    // 从这个月排到预售期最后一天所在的月份
+    val months = remember(today) {
+        generateSequence(today.withDayOfMonth(1)) { it.plusMonths(1) }.takeWhile { !it.isAfter(last) }.toList()
+    }
+    val red = Color(0xFFE02020)
+    val off = Color(0xFFC5CCD6)
+
+    Column(Modifier.fillMaxSize().background(Color.White).pointerInput(Unit) { detectTapGestures { } }) {
+        Row(
+            Modifier.fillMaxWidth().background(Blue).statusBarsPadding().padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("‹ 返回", color = Color.White, fontSize = 15.sp) }
+            Text(
+                "选择日期", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.width(64.dp))
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+            listOf("日", "一", "二", "三", "四", "五", "六").forEachIndexed { i, w ->
+                Text(
+                    w, color = if (i == 0 || i == 6) red else Color(0xFF1F2937), fontSize = 14.sp,
+                    modifier = Modifier.weight(1f), textAlign = TextAlign.Center
+                )
+            }
+        }
+        HorizontalDivider(color = Line)
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            months.forEach { first ->
+                Text(
+                    "${first.year}年${first.monthValue}月", fontSize = 16.sp,
+                    modifier = Modifier.fillMaxWidth().background(Bg).padding(vertical = 8.dp), textAlign = TextAlign.Center
+                )
+                val lead = first.dayOfWeek.value % 7   // 周日排第一列
+                val cells = List(lead) { null } + (1..first.lengthOfMonth()).map { first.withDayOfMonth(it) }
+                cells.chunked(7).forEach { week ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        for (i in 0 until 7) {
+                            val d = week.getOrNull(i)
+                            if (d == null) { Spacer(Modifier.weight(1f)); continue }
+                            val enabled = !d.isBefore(today) && !d.isAfter(last)
+                            val isSelected = d == selected && enabled
+                            val weekend = i == 0 || i == 6
+                            val color = when {
+                                isSelected -> Color.White
+                                !enabled -> off
+                                d == today -> Blue
+                                weekend -> red
+                                else -> Color(0xFF1F2937)
+                            }
+                            Column(
+                                Modifier.weight(1f).padding(horizontal = 2.dp).clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Blue else Color.Transparent)
+                                    .clickable(enabled = enabled) { onSelected(d) }
+                                    .padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(d.dayOfMonth.toString(), color = color, fontSize = 18.sp)
+                                Text(
+                                    if (d == today) "今天" else lunarDay(d),
+                                    color = if (isSelected || d == today || !enabled) color else Grey, fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Text(
+                "灰色的日期还没开售（12306 预售期 ${PRESALE_DAYS} 天）", color = Grey, fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(16.dp), textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
