@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -388,7 +389,7 @@ private fun FilterSheet(
             FilterGroup("有票的席别", seatLabels, filters.seats) { onChange(filters.copy(seats = filters.seats.toggle(it))) }
         Text("票的类型", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(RideKind.DIRECT to "直达", RideKind.COVERS to "提前购票", RideKind.ENDS_EARLY to "买短乘长").forEach { (k, label) ->
+            listOf(RideKind.DIRECT to "直达", RideKind.COVERS to "提前购票", RideKind.ENDS_EARLY to "买短乘长", RideKind.SECOND_SEAT to "换座").forEach { (k, label) ->
                 OptionChip(label, k in filters.kinds) { onChange(filters.copy(kinds = filters.kinds.toggle(k))) }
             }
         }
@@ -440,7 +441,11 @@ private fun TrainCard(
 ) {
     var showSoldOut by remember { mutableStateOf(false) }
     val head = group.head
-    val withSeats = group.shown.filter { it.hasSeats }
+    // 换座：第一张票（只买到半路的最优票）和第二张票（换座票）当成一组，上下挨着显示；筛选只留下其中一张时另一张也带上
+    val second = group.full.firstOrNull { it.kind == RideKind.SECOND_SEAT && it.hasSeats }
+    val first = second?.let { s -> group.full.firstOrNull { it.kind == RideKind.ENDS_EARLY && it.hasSeats && it.toName == s.afterName } }
+    val paired = first != null && second != null && (first in group.shown || second in group.shown)
+    val withSeats = group.shown.filter { it.hasSeats && !(paired && (it == first || it == second)) }
     val soldOut = group.shown.filter { !it.hasSeats }
 
     Card(
@@ -460,15 +465,35 @@ private fun TrainCard(
                     color = Grey, fontSize = 12.sp, modifier = Modifier.weight(1f)
                 )
             }
-            if (withSeats.isEmpty()) {
+            @Composable
+            fun block(t: TrainTicket, inPair: Boolean = false) = SegmentBlock(
+                t, boardName, destName, date, loading = keyOf(t) in loading, onLoadPrice = { onLoadPrice(t) },
+                stops = stops, loadingStops = loadingStops, onExpand = onExpand, onBuy = onBuy, inPair = inPair
+            )
+            if (paired && first != null && second != null) {
+                Column(
+                    Modifier.fillMaxWidth().padding(8.dp)
+                        .border(1.dp, Blue.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                ) {
+                    Text(
+                        "一组票 · 两张都买，到${second.fromName}换座", color = Blue, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 12.dp, top = 6.dp)
+                    )
+                    block(first, inPair = true)
+                    Text(
+                        "↓ 到${second.fromName}不下车，换到第二张票的座位，不用补票", color = Green, fontSize = 12.sp,
+                        modifier = Modifier.fillMaxWidth().background(Blue.copy(alpha = 0.06f)).padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                    block(second, inPair = true)
+                }
+                if (withSeats.isNotEmpty()) HorizontalDivider(color = Line)
+            }
+            if (withSeats.isEmpty() && !paired) {
                 Text("该车次暂无可购票段", color = Grey, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
             }
             withSeats.forEachIndexed { i, t ->
                 if (i > 0) HorizontalDivider(color = Line)
-                SegmentBlock(
-                    t, boardName, destName, date, loading = keyOf(t) in loading, onLoadPrice = { onLoadPrice(t) },
-                    stops = stops, loadingStops = loadingStops, onExpand = onExpand, onBuy = onBuy
-                )
+                block(t)
             }
             if (soldOut.isNotEmpty()) {
                 HorizontalDivider(color = Line)
@@ -548,10 +573,12 @@ private fun seatShort(label: String) = if (label == "无座") label else label.r
 @Composable
 private fun SegmentBlock(
     t: TrainTicket, boardName: String, destName: String, date: String, loading: Boolean, onLoadPrice: () -> Unit,
-    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (String) -> Unit
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (String) -> Unit,
+    inPair: Boolean = false   // 换座的一组票里的一张：补票说明写在两张票中间，这里不再重复
 ) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
+    val rideDate = t.date.ifEmpty { date }   // 过夜车的换座票是第二天的票
     val lowest = t.seats.filter { it.available }
         .mapNotNull { t.prices[it.label]?.removePrefix("¥")?.toDoubleOrNull() }.minOrNull()
 
@@ -632,20 +659,34 @@ private fun SegmentBlock(
                 }
                 if (t.earlierStops > 0)
                     Text("提前${t.earlierStops}站买票，从${t.fromName}买，在${boardName}上车", color = Blue, fontSize = 12.sp)
-                if (t.extraStops > 0)
+                if (t.extraStops > 0 && inPair)
+                    Text("第一张票，先坐到${t.toName}", color = Blue, fontSize = 12.sp)
+                else if (t.extraStops > 0)
                     Text("买到${t.toName}，多坐${t.extraStops}站要补票", color = Orange, fontSize = 12.sp)
+                if (t.kind == RideKind.SECOND_SEAT) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "换座", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(Blue).padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("第二张票，到${t.fromName}换到这个座位", color = Blue, fontSize = 12.sp)
+                    }
+                    if (!inPair) Text("接着买到${t.afterName}的票，不用补票", color = Green, fontSize = 12.sp)
+                    if (t.date.isNotEmpty()) Text("这张票是 ${t.date.drop(5)} 的（过夜车）", color = Orange, fontSize = 12.sp)
+                }
             }
             OutlinedButton(
                 onClick = {
-                    copyPurchaseNote(context, purchaseNote(t, date, boardName))
-                    onBuy(purchaseUrl(t, date))
+                    copyPurchaseNote(context, purchaseNote(t, rideDate, boardName))
+                    onBuy(purchaseUrl(t, rideDate))
                 },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier.height(26.dp)
             ) { Text("网页购票", fontSize = 12.sp) }
             Spacer(Modifier.width(6.dp))
             Button(
-                onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, date) },
+                onClick = { com.wizpizz.ticket12306.auto.Auto12306.start(context, t, rideDate) },
                 colors = ButtonDefaults.buttonColors(containerColor = Orange),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier.height(26.dp)
@@ -668,7 +709,11 @@ private fun weekdayOf(date: String): String? = runCatching {
 /** 要在 12306 里搜的内容：日期、车次、这张票的起终点；买短乘长的票另注明在哪站上车。 */
 private fun purchaseNote(t: TrainTicket, date: String, boardName: String): String =
     "${date.drop(5)} ${t.trainNo} ${t.fromName}→${t.toName}" +
-        if (t.fromName != boardName) "（在${boardName}上车）" else ""
+        when {
+            t.kind == RideKind.SECOND_SEAT -> "（换座票）"
+            t.fromName != boardName -> "（在${boardName}上车）"
+            else -> ""
+        }
 
 /** 12306 网页版的余票查询页，出发站、到达站、日期已经填好（用这张票自己的起终点）。 */
 private fun purchaseUrl(t: TrainTicket, date: String): String {

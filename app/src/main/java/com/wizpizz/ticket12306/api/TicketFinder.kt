@@ -22,11 +22,14 @@ import kotlin.random.Random
  *   2. 取每趟车的完整经停站表，按固定顺序列出票段：起点先是上车站、再是它之前的站（一站一站往前），
  *      每个起点下，终点从终点站开始、一站一站缩短到上车站的下一站（买短乘长）；
  *   3. 把所有车次里相同的票段合并，每个票段只查一次，从结果里挑出我们关心的车次；
- *   4. 每趟车按上面的顺序，第一个有票的票段标为最优。没票的票段也保留，界面折叠显示。
+ *   4. 换座：一趟车最优的票只买到半路（后面要补票）时，再查同一趟车从半路到终点站有没有座位，
+ *      有就作为第二张票：先查正好接上的那一站，再一站一站往后（中间隔的几站补票），最后才是往前（两张票重叠）；
+ *   5. 每趟车按上面的顺序，第一个有票的票段标为最优。没票的票段也保留，界面折叠显示。
  *      价格不在这里查，界面需要时调用 loadPrices。
  *
  * @param maxBefore 往上车站之前最多再看几个站作为起点
  * @param maxSegmentQueries 最多额外查多少个票段；超出时先查顺序靠前的
+ * @param maxSwapQueries 找换座票最多查多少个票段
  * @param pause     两次请求之间的间隔，避免请求太密
  */
 class TicketFinder(
@@ -35,8 +38,12 @@ class TicketFinder(
     private val stationByCode: (String) -> Station? = StationData::findByCode,
     private val maxBefore: Int = 3,
     private val maxSegmentQueries: Int = 60,
+    private val maxSwapQueries: Int = 20,
     private val pause: suspend () -> Unit = { delay(Random.nextLong(250, 500)) }
 ) {
+
+    /** 一趟车的一个换座起点：前一张票买到 endIdx，第二张票从 startIdx 坐到终点站；rank 越小越优先。 */
+    private class Swap(val plan: Plan, val endIdx: Int, val rank: Int)
 
     private class Plan(val train: RawTrain, val stops: List<Station>, val boardIdx: Int, val destIdx: Int) {
         /** (起点序号, 终点序号) → 在这趟车的查询顺序里排第几；直达是 0。 */
@@ -151,7 +158,64 @@ class TicketFinder(
                 }
             }
 
-            // ── 4. 去重；按车次分组，每趟车内按查询顺序排；第一个有票的标为最优 ──
+            // ── 4. 换座：最优的票只买到半路的车，查同一趟车从那一站到终点站的第二张票 ──
+            // 12306 同一趟车分段买票，区间必须首尾相接（中间不能断开，也不能重叠），所以第二张票只能从第一张票的终点站起
+            val swaps = LinkedHashMap<Pair<String, String>, MutableList<Swap>>()
+            for (plan in plans) {
+                val firsts = found.filter { it.trainCode == plan.train.trainCode && it.hasSeats }.sortedBy { it.order }
+                if (firsts.firstOrNull()?.kind != RideKind.ENDS_EARLY) continue
+                // 每张买到半路的有票票段都可以当第一张票，按优先顺序一个个试它的终点站
+                firsts.filter { it.kind == RideKind.ENDS_EARLY }.map { plan.destIdx - it.extraStops }.distinct().forEachIndexed { rank, end ->
+                    val code = plan.stops[end].code
+                    if (code.isNotEmpty()) swaps.getOrPut(code to dest.code) { ArrayList() } += Swap(plan, end, rank)
+                }
+            }
+            if (swaps.isNotEmpty() && maxSwapQueries > 0) {
+                onLog("找换座票：共 ${swaps.size} 个可查的票段，最多查 $maxSwapQueries 个")
+                val bestRank = HashMap<String, Int>()   // 每趟车已经找到的最好的换座票
+                var swapQueries = 0
+                fun mine(resp: QueryResponse, pair: Pair<String, String>, code: String) =
+                    resp.trains.firstOrNull { it.trainCode == code && it.fromCode == pair.first && it.toCode == pair.second }
+                for ((pair, list) in swaps.entries.sortedBy { e -> e.value.minOf { it.rank } }) {
+                    val open = list.filter { it.rank < (bestRank[it.plan.train.trainCode] ?: Int.MAX_VALUE) }
+                    if (open.isEmpty()) continue
+                    if (swapQueries >= maxSwapQueries) break
+                    swapQueries++
+                    pause()
+                    val resp = guarded("换座票段 ${pair.first}→${pair.second}") {
+                        service.queryTickets(pair.first, pair.second, date)
+                    } ?: continue
+                    queries++
+                    names.putAll(resp.stationNames)
+                    val got = ArrayList<RawTrain>()
+                    for (s in open) {
+                        val code = s.plan.train.trainCode
+                        var rt = mine(resp, pair, code) ?: continue
+                        // 过夜车：到换座站已经是第二天（或更晚），要用那天的日期重新查
+                        val offset = dayOffset(s.plan.train, rt)
+                        val legDate = if (offset > 0) plusDays(date, offset) else date
+                        if (offset > 0) {
+                            pause()
+                            val again = guarded("换座票段 ${pair.first}→${pair.second}（$legDate）") {
+                                service.queryTickets(pair.first, pair.second, legDate)
+                            } ?: continue
+                            queries++
+                            rt = mine(again, pair, code) ?: continue
+                        }
+                        got += rt
+                        if (rt.seats.none { it.available && it.label != "无座" }) continue   // 换座要的是座位，无座不算
+                        bestRank[code] = s.rank
+                        found += toTicket(rt, RideKind.SECOND_SEAT, names, SWAP_ORDER + s.rank, 0, 0).copy(
+                            afterName = s.plan.stops[s.endIdx].name,
+                            date = if (offset > 0) legDate else ""
+                        )
+                    }
+                    val fromName = names[pair.first] ?: stationByCode(pair.first)?.name ?: pair.first
+                    onLog("[换座 $swapQueries] $fromName → ${dest.name}：${if (got.isEmpty()) "无这些车次" else summary(got)}")
+                }
+            }
+
+            // ── 5. 去重；按车次分组，每趟车内按查询顺序排；第一个有票的标为最优 ──
             val unique = found.distinctBy { "${it.trainCode}|${it.trainNo}|${it.fromName}|${it.toName}" }
             val bestOrder = unique.filter { it.hasSeats }.groupBy { it.trainCode }
                 .mapValues { (_, list) -> list.minOf { it.order } }
@@ -170,7 +234,7 @@ class TicketFinder(
         withContext(Dispatchers.IO) {
             try {
                 val prices = service.getPrices(
-                    ticket.trainCode, ticket.fromStationNo, ticket.toStationNo, ticket.seatTypes, date
+                    ticket.trainCode, ticket.fromStationNo, ticket.toStationNo, ticket.seatTypes, ticket.date.ifEmpty { date }
                 )
                 if (prices.isEmpty()) ticket else ticket.copy(prices = prices)
             } catch (e: TicketApiException) {
@@ -220,6 +284,31 @@ class TicketFinder(
 
     companion object {
         private const val MAX_CONSECUTIVE_FAILURES = 3
+
+        /** 换座票排在这趟车所有普通票段之后。 */
+        private const val SWAP_ORDER = 100_000
+
+        private fun minutes(hhmm: String): Int? {
+            val p = hhmm.split(":")
+            val h = p.getOrNull(0)?.toIntOrNull() ?: return null
+            val m = p.getOrNull(1)?.toIntOrNull() ?: return null
+            return h * 60 + m
+        }
+
+        /**
+         * 换座票那一段是在上车之后的第几天发车（0 = 当天）。
+         * direct 是上车站→终点站，leg 是换座站→终点站，两段同一时刻到终点站，所以
+         * 上车站到换座站用了 direct.duration - leg.duration。
+         */
+        fun dayOffset(direct: RawTrain, leg: RawTrain): Long {
+            val depart = minutes(direct.departTime) ?: return 0
+            val whole = minutes(direct.duration) ?: return 0
+            val rest = minutes(leg.duration) ?: return 0
+            return ((depart + whole - rest) / (24 * 60)).coerceAtLeast(0).toLong()
+        }
+
+        private fun plusDays(date: String, days: Long): String =
+            runCatching { java.time.LocalDate.parse(date).plusDays(days).toString() }.getOrDefault(date)
 
         /**
          * 一趟车要查的票段 (起点序号, 终点序号)，按优先顺序排好，序号是在这趟车经停站表里的位置。

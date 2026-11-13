@@ -25,7 +25,10 @@ enum class RideKind {
     COVERS,
 
     /** 票的终点在终点站之前：票只管到半路，后面一段要自己补票 */
-    ENDS_EARLY
+    ENDS_EARLY,
+
+    /** 换座票：同一趟车上的第二张票，从第一张票（ENDS_EARLY）的终点站坐到终点站，两张票首尾相接，不用补票 */
+    SECOND_SEAT
 }
 
 /** 一个可查询的票段（某趟车从 fromName 到 toName）。 */
@@ -48,7 +51,9 @@ data class TrainTicket(
     val extraStops: Int = 0,      // 票的终点比终点站早几站（买到这里，之后多坐几站）
     val best: Boolean = false,    // 这趟车按顺序查到的第一个有票的票段
     val originCode: String = "",  // 这趟车的始发站、终点站电报码（查经停站要用）
-    val terminalCode: String = ""
+    val terminalCode: String = "",
+    val afterName: String = "",   // 换座票：前一张票买到哪一站（也就是这张票的起点）
+    val date: String = ""         // 这张票的乘车日期和查询日期不一样时（过夜车的换座票）才有值
 ) {
     val hasSeats: Boolean get() = seats.any { it.available }
 }

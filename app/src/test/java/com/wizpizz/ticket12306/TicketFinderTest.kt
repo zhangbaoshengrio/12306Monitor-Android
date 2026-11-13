@@ -86,11 +86,12 @@ class TicketFinderTest {
 
     private val names = stops.associate { it.code to it.name }
 
-    private fun finder(service: TicketService, maxSegmentQueries: Int = 60) = TicketFinder(
+    private fun finder(service: TicketService, maxSegmentQueries: Int = 60, maxSwapQueries: Int = 0) = TicketFinder(
         service,
         stationByName = { n -> stops.firstOrNull { it.name == n } },
         stationByCode = { c -> stops.firstOrNull { it.code == c } },
         maxSegmentQueries = maxSegmentQueries,
+        maxSwapQueries = maxSwapQueries,
         pause = {}
     )
 
@@ -372,5 +373,113 @@ class TicketFinderTest {
         assertEquals(RideKind.COVERS, TicketFinder.classify(0, 4, b, d))
         assertEquals(RideKind.ENDS_EARLY, TicketFinder.classify(1, 3, b, d))
         assertEquals(RideKind.ENDS_EARLY, TicketFinder.classify(0, 2, b, d))
+    }
+
+    // ── 换座 ─────────────────────────────────────────────────
+
+    private fun swapService(seatsFor: (String, String) -> List<SeatInfo>) = Fake(
+        stopNames = stops.map { it.name }, trainNos = listOf("A"), stationNames = names,
+        seatsFor = { from, to, _ -> seatsFor(from, to) }
+    )
+
+    @Test
+    fun secondSeatJoinsWhereTheFirstTicketEnds() = runBlocking {
+        val service = swapService { from, to ->
+            when (from to to) {
+                "ENH" to "HKN", "HKN" to "HAN" -> listOf(SeatInfo("二等座", "3"))
+                else -> sold
+            }
+        }
+        val result = finder(service, maxSwapQueries = 20).find(request)
+
+        val second = result.tickets.single { it.kind == RideKind.SECOND_SEAT }
+        assertEquals("汉口", second.fromName)
+        assertEquals("宜昌东", second.toName)
+        assertEquals("汉口", second.afterName)
+        assertEquals("", second.date)
+        assertFalse(second.best)
+        // 最优的还是第一张票，换座票排在这趟车的最后
+        assertEquals("汉口", result.tickets.single { it.best }.toName)
+        assertEquals(second, result.tickets.last())
+        // 正好接上就不再查别的换座起点
+        assertEquals(1, service.queryCalls.count { it.second == "HAN" && it.first != "ENH" && it.first != "NKH" })
+    }
+
+    @Test
+    fun secondSeatNeverLeavesAGap() = runBlocking {
+        // 第一张票只能买到六安；汉口→宜昌东有票，但和六安接不上（12306 不让买中间断开的两段）
+        val service = swapService { from, to ->
+            when (from to to) {
+                "ENH" to "UAH", "HKN" to "HAN" -> listOf(SeatInfo("二等座", "有"))
+                else -> sold
+            }
+        }
+        val result = finder(service, maxSwapQueries = 20).find(request)
+        assertTrue(result.tickets.none { it.kind == RideKind.SECOND_SEAT })
+    }
+
+    @Test
+    fun secondSeatFallsBackToAnotherFirstTicketThatConnects() = runBlocking {
+        // 最优的第一张票买到汉口，但汉口→宜昌东没票；买到六安的那张后面能接上
+        val service = swapService { from, to ->
+            when (from to to) {
+                "ENH" to "HKN", "ENH" to "UAH", "UAH" to "HAN" -> listOf(SeatInfo("二等座", "有"))
+                else -> sold
+            }
+        }
+        val result = finder(service, maxSwapQueries = 20).find(request)
+
+        val second = result.tickets.single { it.kind == RideKind.SECOND_SEAT }
+        assertEquals("六安", second.fromName)
+        assertEquals("六安", second.afterName)
+    }
+
+    @Test
+    fun ticketsThatAlreadyReachTheDestinationAreNotFirstTickets() = runBlocking {
+        // 南京南→宜昌东（提前买、坐到终点）也有票，它不需要第二张票，不能拿它的终点去查「宜昌东→宜昌东」
+        val service = swapService { from, to ->
+            when (from to to) {
+                "ENH" to "HKN", "NKH" to "HAN" -> listOf(SeatInfo("二等座", "有"))
+                else -> sold
+            }
+        }
+        finder(service, maxSwapQueries = 20).find(request)
+        assertTrue(service.queryCalls.none { it.first == it.second })
+    }
+
+    @Test
+    fun standingOnlyDoesNotCountAsASecondSeat() = runBlocking {
+        val service = swapService { from, to ->
+            when (from to to) {
+                "ENH" to "HKN" -> listOf(SeatInfo("二等座", "3"))
+                "HKN" to "HAN" -> listOf(SeatInfo("二等座", "无"), SeatInfo("无座", "有"))
+                else -> sold
+            }
+        }
+        val result = finder(service, maxSwapQueries = 20).find(request)
+        assertTrue(result.tickets.none { it.kind == RideKind.SECOND_SEAT })
+    }
+
+    @Test
+    fun noSwapSearchWhenTheBestTicketAlreadyReachesTheDestination() = runBlocking {
+        val service = swapService { from, to ->
+            if (from == "NKH" && to == "HAN") listOf(SeatInfo("二等座", "3")) else sold
+        }
+        val before = finder(service).find(request).queriesMade
+        val service2 = swapService { from, to ->
+            if (from == "NKH" && to == "HAN") listOf(SeatInfo("二等座", "3")) else sold
+        }
+        assertEquals(before, finder(service2, maxSwapQueries = 20).find(request).queriesMade)
+    }
+
+    @Test
+    fun dayOffsetIsCountedFromTheBoardingDeparture() {
+        fun raw(depart: String, duration: String) = RawTrain(
+            "K1", "code", "A", "B", "X", "Y", depart, "00:00", duration, "01", "09", "", emptyList()
+        )
+        // 22:00 上车，全程 10 小时；换座站到终点还有 3 小时 → 上车 7 小时后（第二天 05:00）到换座站
+        assertEquals(1L, TicketFinder.dayOffset(raw("22:00", "10:00"), raw("05:00", "03:00")))
+        // 09:00 上车，4 小时后到换座站，还是当天
+        assertEquals(0L, TicketFinder.dayOffset(raw("09:00", "06:00"), raw("13:00", "02:00")))
     }
 }
