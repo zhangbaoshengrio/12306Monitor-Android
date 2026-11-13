@@ -34,6 +34,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 直达有票也继续找买短乘长的票。先默认开，方便查看。 */
     val searchAll = MutableStateFlow(true)
     val loadingPrices = MutableStateFlow<Set<String>>(emptySet())
+    /** 自动查票价还没跑完（这期间还没有价格的票都显示「查询中」）。 */
+    val pricesPending = MutableStateFlow(false)
+    private var priceJob: kotlinx.coroutines.Job? = null
     /** 车次内部编号 → 经停站表。点开车次时才查，查过就缓存。 */
     val stops = MutableStateFlow<Map<String, List<StopInfo>>>(emptyMap())
     val loadingStops = MutableStateFlow<Set<String>>(emptySet())
@@ -94,20 +97,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun key(t: TrainTicket) = "${t.trainCode}|${t.trainNo}|${t.fromName}|${t.toName}"
 
-    /** 每趟车的最优票段，查完就顺手把价格查了（一趟一个请求），其余的点开再查。 */
-    private suspend fun loadBestPrices(date: String) {
-        val targets = queryResult.value?.filter { it.best && it.prices.isEmpty() } ?: return
-        for (t in targets) {
-            val k = key(t)
-            loadingPrices.value = loadingPrices.value + k
-            val priced = finder.loadPrices(t, date)
-            queryResult.value = queryResult.value?.map { if (key(it) == k) priced else it }
-            loadingPrices.value = loadingPrices.value - k
-            kotlinx.coroutines.delay(250)
+    /**
+     * 查完票就把所有有票的票段的价格都查出来（一张票一个请求，一个接一个地查，最优的先查）。
+     * 没查到的隔一会儿再试一轮；还是没有的，界面上可以点一下重试。
+     */
+    private suspend fun loadAllPrices(date: String) {
+        pricesPending.value = true
+        try {
+            repeat(2) { round ->
+                val targets = queryResult.value?.filter { it.hasSeats && it.prices.isEmpty() }
+                    ?.sortedByDescending { it.best }.orEmpty()
+                if (targets.isEmpty()) return
+                if (round > 0) kotlinx.coroutines.delay(2000)
+                for (t in targets) {
+                    val k = key(t)
+                    loadingPrices.value = loadingPrices.value + k
+                    val priced = finder.loadPrices(t, date)
+                    queryResult.value = queryResult.value?.map { if (key(it) == k) priced else it }
+                    loadingPrices.value = loadingPrices.value - k
+                    kotlinx.coroutines.delay(250)
+                }
+            }
+        } finally {
+            pricesPending.value = false
         }
     }
 
-    /** 点开一张票时再查它的价格。 */
+    /** 自动查没查到价格时，点一下这张票再查一次。 */
     fun loadPrices(ticket: TrainTicket) {
         val k = key(ticket)
         if (ticket.prices.isNotEmpty() || k in loadingPrices.value) return
@@ -129,6 +145,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (date.isEmpty()) { errorMsg.value = "请填写日期"; return }
 
         showResults.value = true
+        priceJob?.cancel()
+        loadingPrices.value = emptySet()
         viewModelScope.launch {
             isQuerying.value = true
             errorMsg.value = null
@@ -140,7 +158,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     queryLog.value = queryLog.value + line
                 }
                 queryResult.value = result.tickets
-                loadBestPrices(date)
+                priceJob = viewModelScope.launch { loadAllPrices(date) }
             } catch (e: TicketApiException) {
                 errorMsg.value = e.message
             } catch (e: Exception) {

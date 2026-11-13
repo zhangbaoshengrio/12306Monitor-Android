@@ -372,7 +372,8 @@ private fun ResultsScreen(vm: MainViewModel, onBuy: (String) -> Unit) {
     val result by vm.queryResult.collectAsState()
     val log by vm.queryLog.collectAsState()
     val error by vm.errorMsg.collectAsState()
-    val loading by vm.loadingPrices.collectAsState()
+    val loadingNow by vm.loadingPrices.collectAsState()
+    val pricesPending by vm.pricesPending.collectAsState()
     val stopsByTrain by vm.stops.collectAsState()
     val loadingStops by vm.loadingStops.collectAsState()
 
@@ -382,6 +383,8 @@ private fun ResultsScreen(vm: MainViewModel, onBuy: (String) -> Unit) {
     var showLog by remember { mutableStateOf(false) }
 
     val all = result ?: emptyList()
+    // 自动查票价还没跑完时，所有还没价格的票都算「查询中」
+    val loading = if (pricesPending) all.map(vm::key).toSet() else loadingNow
     val groups = remember(all, filters, sort) {
         // 查询结果已经按车次分组、组内按查询顺序排好；筛选只影响组里显示哪些票段
         val list = all.groupBy { it.trainCode }.values
@@ -723,10 +726,10 @@ private fun SegmentBlock(
                 when {
                     lowest != null -> "¥${if (lowest % 1.0 == 0.0) lowest.toInt() else lowest}起"
                     loading -> "票价查询中…"
-                    else -> "点击查看票价"
+                    else -> "票价没查到\n点击重试"
                 },
                 color = if (lowest != null) Orange else Grey,
-                fontSize = if (lowest != null) 16.sp else 11.sp,
+                fontSize = if (lowest != null) 16.sp else 11.sp, lineHeight = 14.sp, textAlign = TextAlign.End,
                 fontWeight = if (lowest != null) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier.padding(top = 4.dp)
             )

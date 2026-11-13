@@ -42,6 +42,11 @@ class LiveTicketTest {
             println("有票  ${t.trainNo}  ${t.fromName} ${t.departTime} → ${t.toName} ${t.arriveTime}  [${t.kind}]  $seats")
         }
 
+        // 所有有票的票段都要能查到价格（App 里是自动全部查的）
+        val available = result.tickets.filter { it.hasSeats }
+        val missing = available.filter { Thread.sleep(250); finder.loadPrices(it, date).prices.isEmpty() }
+        println("票价  ${available.size} 张有票的票段，${missing.size} 张没查到：" + missing.joinToString { "${it.trainNo} ${it.fromName}→${it.toName}" })
+
         val priceMe = result.tickets.firstOrNull { it.hasSeats }
         if (priceMe != null) {
             val priced = finder.loadPrices(priceMe, date)
