@@ -404,6 +404,10 @@ private fun minutes(d: String): Int {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ResultsScreen(vm: MainViewModel, onBuy: (WebBuy) -> Unit) {
+    val context = LocalContext.current
+    fun logLine(line: String) {
+        runCatching { java.io.File(context.filesDir, "query.log").appendText("${System.currentTimeMillis() / 1000} $line\n") }
+    }
     val board by vm.boardStationSelected.collectAsState()
     val dest by vm.destStationSelected.collectAsState()
     val date by vm.dateInput.collectAsState()
@@ -488,7 +492,7 @@ private fun ResultsScreen(vm: MainViewModel, onBuy: (WebBuy) -> Unit) {
                     color = if (sort == it) Blue else Grey,
                     fontWeight = if (sort == it) FontWeight.Bold else FontWeight.Normal,
                     fontSize = 13.sp,
-                    modifier = Modifier.clickable { sort = it }.padding(horizontal = 6.dp, vertical = 6.dp)
+                    modifier = Modifier.clickable { sort = it; logLine("sort: ${it.label}") }.padding(horizontal = 6.dp, vertical = 6.dp)
                 )
             }
         }
@@ -534,7 +538,10 @@ private fun ResultsScreen(vm: MainViewModel, onBuy: (WebBuy) -> Unit) {
 
     if (showFilter) {
         ModalBottomSheet(onDismissRequest = { showFilter = false }, containerColor = Color.White) {
-            FilterSheet(all, filters, { filters = it }, shownCount = groups.size) { showFilter = false }
+            FilterSheet(all, filters, { filters = it }, shownCount = groups.size) {
+                showFilter = false
+                logLine("filter: $filters -> ${groups.size} trains")
+            }
         }
     }
 }

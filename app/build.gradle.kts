@@ -12,7 +12,7 @@ android {
         applicationId = "com.wizpizz.ticket12306"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
+        versionCode = 18
         versionName = "1.0.9"
     }
 

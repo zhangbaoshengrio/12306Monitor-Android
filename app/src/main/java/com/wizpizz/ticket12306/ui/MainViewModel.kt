@@ -47,6 +47,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val finder = TicketFinder(TicketApi())
 
+    // 查票过程自动写文件，不用开关；每次查询从头覆盖，方便事后用 adb 拉出来看
+    private val logFile = java.io.File(app.filesDir, "query.log")
+    private fun log(line: String) {
+        runCatching { logFile.appendText("${System.currentTimeMillis() / 1000} $line\n") }
+    }
+
     init {
         if (!StationData.isLoaded) {
             app.assets.open("station_name.js").use { StationData.load(it) }
@@ -147,6 +153,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         showResults.value = true
         priceJob?.cancel()
         loadingPrices.value = emptySet()
+        runCatching { logFile.writeText("") }
+        log("query ${board.name} -> ${dest.name} date=$date searchAll=${searchAll.value}")
         viewModelScope.launch {
             isQuerying.value = true
             errorMsg.value = null
@@ -156,13 +164,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val result = finder.find(QueryRequest(date, board, dest, searchAll.value)) { line ->
                     queryLog.value = queryLog.value + line
+                    log(line)
                 }
                 queryResult.value = result.tickets
+                log("result: ${result.tickets.size} tickets, direct=${result.directTrainCount}, queries=${result.queriesMade}")
                 priceJob = viewModelScope.launch { loadAllPrices(date) }
             } catch (e: TicketApiException) {
                 errorMsg.value = e.message
+                log("error: ${e.message}")
             } catch (e: Exception) {
                 errorMsg.value = "查询失败: ${e.message}"
+                log("error: ${e.message}")
             } finally {
                 isQuerying.value = false
             }
