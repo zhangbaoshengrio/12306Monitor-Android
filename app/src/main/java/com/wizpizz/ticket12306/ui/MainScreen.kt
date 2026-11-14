@@ -21,7 +21,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -63,14 +66,28 @@ private val Grey = Color(0xFF5F6B7A)
 private val Bg = Color(0xFFF2F5F9)
 private val Line = Color(0xFFE1E6ED)
 
+private const val LOGIN_USER_PREFS = "login_status"
+private const val LOGIN_USER_KEY = "user"
+
 @Composable
 fun MainScreen(vm: MainViewModel = viewModel()) {
     val showResults by vm.showResults.collectAsState()
-    var webUrl by remember { mutableStateOf<String?>(null) }
+    var webBuy by remember { mutableStateOf<WebBuy?>(null) }
+    var showLogin by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences(LOGIN_USER_PREFS, android.content.Context.MODE_PRIVATE) }
+    // 只是「最近一次看到的登录名」，给首页右上角一个提示；真的有没有登录，还是看网页自己的 cookie
+    var loginUser by remember { mutableStateOf(prefs.getString(LOGIN_USER_KEY, null)) }
+    fun setLoginUser(name: String?) {
+        loginUser = name
+        prefs.edit().putString(LOGIN_USER_KEY, name).apply()
+    }
     BackHandler(enabled = showResults) { vm.backToSearch() }
     Box(Modifier.fillMaxSize().background(Bg)) {
-        if (showResults) ResultsScreen(vm, onBuy = { webUrl = it }) else SearchScreen(vm)
-        webUrl?.let { WebScreen(it, onClose = { webUrl = null }) }
+        if (showResults) ResultsScreen(vm, onBuy = { webBuy = it })
+        else SearchScreen(vm, loginUser = loginUser, onLogin = { showLogin = true })
+        webBuy?.let { WebScreen(it, onClose = { webBuy = null }) }
+        if (showLogin) LoginScreen(onClose = { showLogin = false }, onUserChanged = ::setLoginUser)
     }
 }
 
@@ -79,7 +96,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
 // ─────────────────────────────────────────────────────────────
 
 @Composable
-private fun SearchScreen(vm: MainViewModel) {
+private fun SearchScreen(vm: MainViewModel, loginUser: String?, onLogin: () -> Unit) {
     val board by vm.boardStationSelected.collectAsState()
     val dest by vm.destStationSelected.collectAsState()
     val date by vm.dateInput.collectAsState()
@@ -94,9 +111,21 @@ private fun SearchScreen(vm: MainViewModel) {
             Modifier.fillMaxWidth().background(Blue)
                 .statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 56.dp)
         ) {
-            Text("买短乘长查票", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(4.dp))
-            Text("直达票售罄？查询可在上车站乘坐的其他票段", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text("买短乘长查票", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text("直达票售罄？查询可在上车站乘坐的其他票段", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                }
+                // 提前在这里登录一次 12306，之后点「网页购票」就不用再登录了（跟网页购票用的是同一个网页、同一份登录状态）
+                // 登录过之后这里换成显示用户名，再点进去是看登录状态/换账号，不是去登录
+                TextButton(onClick = onLogin) {
+                    Text(
+                        if (loginUser != null) "您好，$loginUser" else "提前登录 12306",
+                        color = Color.White, fontSize = 13.sp
+                    )
+                }
+            }
         }
 
         Card(
@@ -364,7 +393,7 @@ private fun minutes(d: String): Int {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ResultsScreen(vm: MainViewModel, onBuy: (String) -> Unit) {
+private fun ResultsScreen(vm: MainViewModel, onBuy: (WebBuy) -> Unit) {
     val board by vm.boardStationSelected.collectAsState()
     val dest by vm.destStationSelected.collectAsState()
     val date by vm.dateInput.collectAsState()
@@ -556,7 +585,7 @@ private fun OptionChip(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun TrainCard(
     group: TrainGroup, boardName: String, destName: String, date: String,
     loading: Set<String>, keyOf: (TrainTicket) -> String, onLoadPrice: (TrainTicket) -> Unit,
-    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (String) -> Unit
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (WebBuy) -> Unit
 ) {
     var showSoldOut by remember { mutableStateOf(false) }
     val head = group.head
@@ -699,7 +728,7 @@ private fun seatShort(label: String) = if (label == "无座") label else label.r
 @Composable
 private fun SegmentBlock(
     t: TrainTicket, boardName: String, destName: String, date: String, loading: Boolean, onLoadPrice: () -> Unit,
-    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (String) -> Unit,
+    stops: List<StopInfo>?, loadingStops: Boolean, onExpand: () -> Unit, onBuy: (WebBuy) -> Unit,
     inPair: Boolean = false   // 换座的一组票里的一张：补票说明写在两张票中间，这里不再重复
 ) {
     val context = LocalContext.current
@@ -840,7 +869,7 @@ private fun SegmentBlock(
             OutlinedButton(
                 onClick = {
                     copyPurchaseNote(context, purchaseNote(t, rideDate, boardName))
-                    onBuy(purchaseUrl(t, rideDate))
+                    onBuy(WebBuy(purchaseUrl(t, rideDate), t.trainNo, "ticket_${t.trainCode}_${t.fromStationNo}_${t.toStationNo}"))
                 },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier.height(26.dp)
@@ -908,12 +937,196 @@ private fun open12306App(context: android.content.Context) {
 // App 内的 12306 网页（官方网站，你自己在上面登录和购票；我们看不到你的密码）
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 网页购票要打开的东西：余票查询页的网址，以及这张票在那一页结果表里的行 id（ticket_车次编号_出发站序号_到达站序号）。
+ * 有行 id 时，网页先盖住，在后面自动点这一行的「预订」，到了订单页（或者要登录）再露出来。
+ * 具体到哪个席别是 12306 自己决定的——它那一行只有一个不分席别的「预订」链接，我们这边管不到。
+ */
+private class WebBuy(val url: String, val trainNo: String, val rowId: String)
+
+/** 调试用：现在的网址、结果行数、网页发过的请求和回应的开头、屏幕上看得见的弹窗文字。 */
+private const val PROBE = """
+(function(){
+  if (!window.__hook && window.jQuery) {
+    window.__hook = 1; window.__log = '';
+    jQuery(document).ajaxComplete(function(e, x, o){ window.__log += ' | ' + o.url + ' ' + x.status + ' ' + (x.responseText || '').slice(0, 160); });
+  }
+  var t = '';
+  document.querySelectorAll('.mask,.modal-login,[class*=dhtmlx],[class*=dhx]').forEach(function(e){
+    var st = getComputedStyle(e);
+    if (st.display != 'none' && st.visibility != 'hidden' && e.getBoundingClientRect().height > 0) t += ' [' + e.className + '] ' + (e.innerText || '').slice(0, 120);
+  });
+  return location.href.slice(0, 70) + ' rows=' + document.querySelectorAll('#queryLeftTable tr').length + ' ajax:' + (window.__log || '') + ' seen:' + t.slice(0, 600);
+})()
+"""
+
+/** 在 12306 余票查询页里找到这张票那一行，点它的「预订」；每半秒跑一次，返回现在到哪一步了。只点这一个按钮。
+ *  第一次点了「预订」之后，12306 如果判断还没登录，只会弹登录框，并不会在登录成功后自己继续下单——
+ *  所以只要还停在查询页（还没到订单页，也没查到卖光），就隔几秒再点一次，而不是点一次就不管了。 */
+private fun bookScript(rowId: String) = """
+(function(){
+  if (location.href.indexOf('confirmPassenger') >= 0) return 'order';
+  if (location.href.indexOf('leftTicket/init') < 0) return 'other';
+  var s = window.__buy || (window.__buy = {n: 0, lastClick: 0});
+  var row = document.getElementById('$rowId');
+  if (row) {
+    var a = row.querySelector('a.btn72');
+    if (!a) return 'soldout';
+    var now = Date.now();
+    if (now - s.lastClick > 4000) { a.click(); s.lastClick = now; }
+    return 'clicked';
+  }
+  s.n++;
+  if (s.n == 10 && !document.querySelector('#queryLeftTable tr')) {
+    var q = document.getElementById('query_ticket');
+    if (q) q.click();
+  }
+  return s.n > 50 ? 'notfound' : 'waiting';
+})()
+"""
+
+/** 到了订单页之后，12306 自己偶尔会在加载乘车人信息时误判成「没登录」（哪怕其实登录着）。
+ *  这段只找「写着『用户未登录』的那个提示框」，点掉它唯一的「确定」；不认识别的提示就不碰。 */
+
+private const val LOGIN_DIALOG_SCRIPT = """
+(function(){
+  if (location.href.indexOf('confirmPassenger') < 0) return 'left';
+  function vis(e) {
+    var st = getComputedStyle(e);
+    if (st.display === 'none' || st.visibility === 'hidden') return false;
+    var r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  var all = document.querySelectorAll('body *');
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    if (el.children.length === 0 && el.textContent && el.textContent.trim() === '用户未登录' && vis(el)) {
+      var cur = el;
+      for (var d = 0; d < 8 && cur; d++, cur = cur.parentElement) {
+        var nodes = cur.querySelectorAll('*');
+        for (var j = 0; j < nodes.length; j++) {
+          var b = nodes[j];
+          if (b.children.length === 0 && b.textContent && b.textContent.trim() === '确定' && vis(b)) {
+            b.click();
+            return 'dismissed';
+          }
+        }
+      }
+    }
+  }
+  return 'none';
+})()
+"""
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun WebScreen(url: String, onClose: () -> Unit) {
+private fun WebScreen(buy: WebBuy, onClose: () -> Unit) {
+    val url = buy.url
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
     var progress by remember { mutableStateOf(0) }
+    var covered by remember { mutableStateOf(true) }
+    var note by remember { mutableStateOf("") }
+
+    // 点过「预订」之后，不能因为网页先盖住了就不再看它：用户可能要先登录，登录完网页会自己跳到订单页，
+    // 这时候要把提示换掉，而不是让「请先登录」一直挂在那不动（之前出现过这个 bug）。所以这里不在揭开遮罩后就
+    // 停止检查，而是一直看到订单页为止；只有点「直接看网页」或关掉这个页面，才真正不再管它。
+    LaunchedEffect(webView) {
+        val w = webView ?: return@LaunchedEffect
+        var last = ""
+        suspend fun run(js: String): String = suspendCancellableCoroutine { c ->
+            w.evaluateJavascript(js) { if (c.isActive) c.resume(it.orEmpty().trim('"')) }
+        }
+        // 网页刚打开时是按加载中的那个窄页面算的缩放，后面表格、乘客信息这些东西撑开了页面，缩放就跟着不对了，
+        // 右边会空出一截。揭开遮罩给用户看之前，轻轻缩一下再放回来，逼网页按现在的实际宽度重新算一次缩放。
+        suspend fun nudgeZoom() {
+            w.zoomOut(); delay(16); w.zoomIn()
+        }
+        suspend fun log(state: String) {
+            val seen = run(PROBE)
+            if ("$state $seen" != last) {
+                last = "$state $seen"
+                runCatching { java.io.File(context.filesDir, "web.log").appendText("${System.currentTimeMillis() / 1000} $state $seen\n") }
+            }
+        }
+
+        var orderRetries = 0
+        outer@ while (true) {
+            var sinceClick = -1
+            var elsewhere = 0
+            var elsewhereAfterClick = 0
+            var clickedOnce = false
+            var retried = false
+            var reachedOrder = false
+            while (true) {
+                delay(500)
+                val state = run(bookScript(buy.rowId))
+                log(state)
+                when (state) {
+                    "order" -> {
+                        note = "已到订单页，请自己选乘车人、提交订单"; covered = false; nudgeZoom()
+                        reachedOrder = true
+                    }
+                    "soldout" -> { note = "网页上 ${buy.trainNo} 这张票现在不能预订，请自己看一下"; covered = false; nudgeZoom() }
+                    "notfound" -> { note = "网页上没找到 ${buy.trainNo}，请自己点查询再找"; covered = false; nudgeZoom() }
+                    "other" -> {
+                        if (clickedOnce) {
+                            // 点过预订、也登录过了，网页却跳回了个人中心而不是订单页：重新打开查询页，再点一次预订（只重试一次）
+                            if (++elsewhereAfterClick >= 8 && !retried) {
+                                retried = true
+                                elsewhereAfterClick = 0
+                                sinceClick = -1
+                                note = ""
+                                covered = true
+                                w.loadUrl(buy.url)
+                            }
+                        } else if (++elsewhere >= 16) {
+                            // 刚打开时网页还没载入，地址也不是查询页；连着 8 秒都不在查询页才算真的去了别处
+                            covered = false
+                            nudgeZoom()
+                        }
+                    }
+                    "clicked" -> {
+                        clickedOnce = true
+                        elsewhereAfterClick = 0
+                        if (++sinceClick == 8) {
+                            // 点了预订却没进订单页：多半是 12306 弹出了登录框；登录后下面会把这句话换掉
+                            note = "请先登录 12306；登录后会接着进入订单页"; covered = false
+                            nudgeZoom()
+                        }
+                    }
+                }
+                if (reachedOrder || state == "soldout" || state == "notfound") break
+            }
+            if (!reachedOrder) break@outer   // 卖光了或没找到：到此为止，不用再看
+
+            // 到了订单页之后，12306 自己偶尔会在加载乘车人信息时误判成没登录（哪怕其实登录着）；
+            // 这里再看一会儿，一旦看到那个「用户未登录」的提示，就自动关掉、回查询页重新点一次预订（最多重试 2 次）
+            var problem = false
+            var tries = 0
+            while (tries < 20) {
+                tries++
+                delay(500)
+                val r = run(LOGIN_DIALOG_SCRIPT)
+                if (r == "dismissed") {
+                    runCatching { java.io.File(context.filesDir, "web.log").appendText("${System.currentTimeMillis() / 1000} dismissed-login-dialog\n") }
+                    problem = true
+                    break
+                }
+                if (r == "left") break
+            }
+            if (!problem) break@outer
+            if (orderRetries >= 2) {
+                note = "12306 多次提示未登录，请自己重新进一次网页购票"; covered = false
+                break@outer
+            }
+            orderRetries++
+            note = "12306 提示未登录，自动重试一次…"
+            covered = true
+            w.loadUrl(buy.url)
+            delay(1000)
+        }
+    }
     BackHandler { val w = webView; if (w != null && w.canGoBack()) w.goBack() else onClose() }
 
     Column(Modifier.fillMaxSize().background(Color.White)) {
@@ -929,9 +1142,16 @@ private fun WebScreen(url: String, onClose: () -> Unit) {
             TextButton(onClick = { open12306App(context) }) { Text("用App", color = Color.White, fontSize = 14.sp) }
         }
         if (progress in 1..99) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Orange)
+        if (note.isNotEmpty() && !covered) Text(
+            note, color = Orange, fontSize = 13.sp,
+            modifier = Modifier.fillMaxWidth().background(Orange.copy(alpha = 0.08f)).padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+        Box(Modifier.fillMaxWidth().weight(1f)) {
         AndroidView(
-            modifier = Modifier.fillMaxWidth().weight(1f),
+            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
+                // 调试版可以从电脑上用 chrome://inspect 看这个网页
+                if (ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) WebView.setWebContentsDebuggingEnabled(true)
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true          // 12306 网页需要
                     settings.domStorageEnabled = true
@@ -959,6 +1179,104 @@ private fun WebScreen(url: String, onClose: () -> Unit) {
                     }
                     webView = this
                     loadUrl(url)
+                }
+            },
+            onRelease = { it.destroy() }
+        )
+        // 网页在后面自己走到订单页，这段时间先盖住
+        if (covered) Column(
+            Modifier.fillMaxSize().background(Color.White).clickable(enabled = false) {},
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator(color = Blue)
+            Spacer(Modifier.height(16.dp))
+            Text("正在网页里打开 ${buy.trainNo} 的订单页…", fontSize = 15.sp)
+            Text("只点「预订」，不选乘车人、不提交订单", color = Grey, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+            TextButton(onClick = { covered = false; webView?.let { it.zoomOut(); it.zoomIn() } }) { Text("直接看网页", color = Blue, fontSize = 13.sp) }
+        }
+        }
+    }
+}
+
+/** 12306 官方登录页网址：跟「网页购票」用的是同一个 WebView 实例、同一份 cookie，提前在这里登录一次，
+ *  后面点「网页购票」时就不会再弹登录框了。这个页面只负责把登录页打开，剩下的（账号、验证码、滑块）全是用户自己操作。 */
+private const val LOGIN_URL = "https://kyfw.12306.cn/otn/resources/login.html"
+
+/** 12306 登录后，页面右上角会有一句「您好， 张宝胜 退出」；从整页文字里把中间的名字抠出来，没有就是没登录。 */
+private const val WHOAMI_SCRIPT = """
+(function(){
+  var m = document.body.innerText.match(/您好[，,]\s*([^\n，,]{1,20})\s*退出/);
+  return m ? m[1].trim() : '';
+})()
+"""
+
+@Composable
+private fun LoginScreen(onClose: () -> Unit, onUserChanged: (String?) -> Unit) {
+    val context = LocalContext.current
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var progress by remember { mutableStateOf(0) }
+
+    // 每隔一会看一眼页面右上角是不是出现了「您好，XXX」，有就报给首页显示；用户自己退出登录了就报空
+    LaunchedEffect(webView) {
+        val w = webView ?: return@LaunchedEffect
+        while (true) {
+            delay(1200)
+            val name = suspendCancellableCoroutine<String> { c ->
+                w.evaluateJavascript(WHOAMI_SCRIPT) { if (c.isActive) c.resume(it.orEmpty().trim('"')) }
+            }
+            onUserChanged(name.ifEmpty { null })
+        }
+    }
+
+    BackHandler { val w = webView; if (w != null && w.canGoBack()) w.goBack() else onClose() }
+
+    Column(Modifier.fillMaxSize().background(Color.White)) {
+        Row(
+            Modifier.fillMaxWidth().background(Blue).statusBarsPadding().padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onClose) { Text("‹ 返回", color = Color.White, fontSize = 15.sp) }
+            Text(
+                "登录 12306", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center
+            )
+            TextButton(onClick = onClose) { Text("完成", color = Color.White, fontSize = 14.sp) }
+        }
+        if (progress in 1..99) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Orange)
+        Text(
+            "在这里登录一次，之后用「网页购票」就不用再登录", color = Grey, fontSize = 12.sp,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+        AndroidView(
+            modifier = Modifier.fillMaxSize().weight(1f),
+            factory = { ctx ->
+                if (ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) WebView.setWebContentsDebuggingEnabled(true)
+                WebView(ctx).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                            val u = request.url
+                            if (u.scheme == "https") return false
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }
+                            return true
+                        }
+                    }
+                    webChromeClient = object : WebChromeClient() {
+                        override fun onProgressChanged(view: WebView, newProgress: Int) { progress = newProgress }
+                    }
+                    webView = this
+                    loadUrl(LOGIN_URL)
                 }
             },
             onRelease = { it.destroy() }
