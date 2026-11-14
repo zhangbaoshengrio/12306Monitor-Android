@@ -351,7 +351,9 @@ private fun StationRow(label: String, hint: String, station: Station?, onClick: 
 // 结果页
 // ─────────────────────────────────────────────────────────────
 
-private enum class SortBy(val label: String) { DEPART("出发时间"), DURATION("耗时最短"), SEATS("有票优先"), PRICE("价格最低") }
+private enum class SortBy(val label: String) {
+    DEPART("出发时间"), DURATION("耗时最短"), SEATS("有票优先"), PRICE("价格最低"), PRICE_DESC("价格最高")
+}
 
 private data class Filters(
     val trainTypes: Set<String> = emptySet(),   // G/C、D、其他
@@ -432,6 +434,10 @@ private fun ResultsScreen(vm: MainViewModel, onBuy: (WebBuy) -> Unit) {
             SortBy.DURATION -> list.sortedBy { minutes(it.head.duration) }
             SortBy.SEATS -> list.sortedWith(compareByDescending<TrainGroup> { g -> g.full.any { it.best } }.thenBy { it.head.departTime })
             SortBy.PRICE -> list.sortedBy { it.lowestShownPrice }
+            // 还没查到价格的票（lowestShownPrice 是占位的 MAX_VALUE）要留在最后面，不能因为「最高」就排到最前面
+            SortBy.PRICE_DESC -> list.sortedWith(
+                compareByDescending<TrainGroup> { it.lowestShownPrice != Double.MAX_VALUE }.thenByDescending { it.lowestShownPrice }
+            )
         }
     }
 
