@@ -1206,7 +1206,7 @@ private const val LOGIN_URL = "https://kyfw.12306.cn/otn/resources/login.html"
 private const val WHOAMI_SCRIPT = """
 (function(){
   var m = document.body.innerText.match(/您好[，,]\s*([^\n，,]{1,20})\s*退出/);
-  return m ? m[1].trim() : '';
+  return m ? m[1].replace(/[\s|]+$/, '') : '';
 })()
 """
 
