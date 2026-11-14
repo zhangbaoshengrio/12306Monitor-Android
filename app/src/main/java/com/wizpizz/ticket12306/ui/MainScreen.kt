@@ -351,7 +351,7 @@ private fun StationRow(label: String, hint: String, station: Station?, onClick: 
 // 结果页
 // ─────────────────────────────────────────────────────────────
 
-private enum class SortBy(val label: String) { DEPART("出发时间"), DURATION("耗时最短"), SEATS("有票优先") }
+private enum class SortBy(val label: String) { DEPART("出发时间"), DURATION("耗时最短"), SEATS("有票优先"), PRICE("价格最低") }
 
 private data class Filters(
     val trainTypes: Set<String> = emptySet(),   // G/C、D、其他
@@ -359,9 +359,10 @@ private data class Filters(
     val kinds: Set<RideKind> = emptySet(),
     val froms: Set<String> = emptySet(),
     val tos: Set<String> = emptySet(),
-    val times: Set<Int> = emptySet()            // 出发时段 0..3
+    val times: Set<Int> = emptySet(),           // 出发时段 0..3
+    val arriveTimes: Set<Int> = emptySet()      // 到达时段 0..3
 ) {
-    val count get() = listOf(trainTypes, seats, kinds, froms, tos, times).count { it.isNotEmpty() }
+    val count get() = listOf(trainTypes, seats, kinds, froms, tos, times, arriveTimes).count { it.isNotEmpty() }
 }
 
 private fun trainType(no: String) = when {
@@ -379,11 +380,18 @@ private fun Filters.matches(t: TrainTicket) =
         (kinds.isEmpty() || t.kind in kinds) &&
         (froms.isEmpty() || t.fromName in froms) &&
         (tos.isEmpty() || t.toName in tos) &&
-        (times.isEmpty() || timeBucket(t.departTime) in times)
+        (times.isEmpty() || timeBucket(t.departTime) in times) &&
+        (arriveTimes.isEmpty() || timeBucket(t.arriveTime) in arriveTimes)
+
+/** 这张票里，有余票的席别中最便宜的价格；价格还没查到时是 null。 */
+private fun TrainTicket.lowestPrice(): Double? =
+    seats.filter { it.available }.mapNotNull { prices[it.label]?.removePrefix("¥")?.toDoubleOrNull() }.minOrNull()
 
 /** 一趟车：full 是这趟车查到的全部票段，shown 是通过筛选后要显示的。 */
 private data class TrainGroup(val full: List<TrainTicket>, val shown: List<TrainTicket>) {
     val head: TrainTicket get() = full.firstOrNull { it.kind == RideKind.DIRECT } ?: full.first()
+    /** 显示出来的票段里最便宜的价格；还没查到价格的票当成没有，排到最后面。 */
+    val lowestShownPrice: Double get() = shown.mapNotNull { it.lowestPrice() }.minOrNull() ?: Double.MAX_VALUE
 }
 
 private fun minutes(d: String): Int {
@@ -423,6 +431,7 @@ private fun ResultsScreen(vm: MainViewModel, onBuy: (WebBuy) -> Unit) {
             SortBy.DEPART -> list
             SortBy.DURATION -> list.sortedBy { minutes(it.head.duration) }
             SortBy.SEATS -> list.sortedWith(compareByDescending<TrainGroup> { g -> g.full.any { it.best } }.thenBy { it.head.departTime })
+            SortBy.PRICE -> list.sortedBy { it.lowestShownPrice }
         }
     }
 
@@ -547,6 +556,12 @@ private fun FilterSheet(
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TimeLabels.forEachIndexed { i, label ->
                 OptionChip(label, i in filters.times) { onChange(filters.copy(times = filters.times.toggle(i))) }
+            }
+        }
+        Text("到达时间", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TimeLabels.forEachIndexed { i, label ->
+                OptionChip(label, i in filters.arriveTimes) { onChange(filters.copy(arriveTimes = filters.arriveTimes.toggle(i))) }
             }
         }
         Spacer(Modifier.height(20.dp))
@@ -735,8 +750,7 @@ private fun SegmentBlock(
     var expanded by remember { mutableStateOf(false) }
     var seatsOpen by remember { mutableStateOf(false) }
     val rideDate = t.date.ifEmpty { date }   // 过夜车的换座票是第二天的票
-    val lowest = t.seats.filter { it.available }
-        .mapNotNull { t.prices[it.label]?.removePrefix("¥")?.toDoubleOrNull() }.minOrNull()
+    val lowest = t.lowestPrice()
 
     Column(
         Modifier.fillMaxWidth().clickable { seatsOpen = !seatsOpen; if (t.prices.isEmpty()) onLoadPrice() }
